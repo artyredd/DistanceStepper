@@ -5,6 +5,7 @@
 #include <pico/binary_info/code.h>
 #include <hardware/i2c.h>
 #include "pico/binary_info.h"
+#include <string>
 
 // distance sensor
 #define IR_SENSOR_ADC_PIN 26  // GPIO 26 == ADC0
@@ -32,6 +33,8 @@
 #define DISTANCE_PRECISION 1000
 
 #define abs(value) ((value) < 0 ? (-value) : (value))
+#define max(value,upper) ((value) < (upper) ? upper : value)
+#define min(value,lower) ((value) > (lower) ? lower : value)
 
 
 float min = 9999.0f;
@@ -43,6 +46,8 @@ volatile bool zLimitMax = false;
 
 volatile int encoder_position = 0;
 volatile uint8_t last_state = 0;
+// -1 is left, 0 is no direction, 1 is right
+volatile int encoderDirection = 0;
 
 uint8_t clk = 0;
 uint8_t data = 0;
@@ -139,16 +144,35 @@ void encoder_update() {
     if ((last_state == 0b00 && new_state == 0b01) ||
         (last_state == 0b01 && new_state == 0b11) ||
         (last_state == 0b11 && new_state == 0b10) ||
-        (last_state == 0b10 && new_state == 0b00)) {
-        encoder_position++;  // CW
-        last_state = new_state;
-    } else if (
+        (last_state == 0b10 && new_state == 0b00)) 
+    {
+        if(encoderDirection != -1)
+        {
+            encoder_position++;  // CW
+            last_state = new_state;
+            encoderDirection = 1;
+        }
+        else
+        {
+            encoderDirection = 0;
+        }
+    } 
+    else if (
         (last_state == 0b00 && new_state == 0b10) ||
         (last_state == 0b10 && new_state == 0b11) ||
         (last_state == 0b11 && new_state == 0b01) ||
-        (last_state == 0b01 && new_state == 0b00)) {
-        encoder_position--;  // CCW
-        last_state = new_state;
+        (last_state == 0b01 && new_state == 0b00)) 
+    {
+        if(encoderDirection != 1)
+        {
+            encoder_position--;  // CCW
+            last_state = new_state;
+            encoderDirection = -1;
+        }
+        else
+        {
+            encoderDirection = 0;
+        }
     }
 }
 
@@ -265,11 +289,57 @@ float calculateDeltaTime()
     return dt;
 }
 
+struct ProgramState
+{
+    int SelectedItem;
+    int PreviousSelectedItem;
+    bool ChangedMenu;
+};
+
+#define NUMBER_OF_MAIN_MENU_ITEMS 4
+
+#define MENU(name) void UI_##name(const float deltaTime, ProgramState* state, LCD_I2C* display)
+
+MENU(DrawMainMenu)
+{
+    if(state->PreviousSelectedItem != state->SelectedItem)
+    {
+        const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
+            "Calibrate",
+            "Start",
+            "Info",
+            "Back"
+        };
+
+        if(state->ChangedMenu)
+        {
+            state->ChangedMenu = false;
+
+            display->Clear();
+            for(int i = 0; i < NUMBER_OF_MAIN_MENU_ITEMS; i++)
+            {
+                display->SetCursor(i,1);
+
+                display->PrintString(options[i]);
+            }
+        }
+
+        // clear arrows
+        display->SetCursor(state->PreviousSelectedItem,0);
+        display->PrintChar(' ');
+
+        state->PreviousSelectedItem = state->SelectedItem;
+
+        display->SetCursor(state->SelectedItem,0);
+        display->PrintChar('>');
+    }
+}
+
 int main() {
     stdio_init_all();
 
     printf("Initialized stdio\n");
-    sleep_ms(7000);
+    sleep_ms(2000);
     
     init_sensor_pins();
     init_limit_pins();
@@ -310,6 +380,13 @@ int main() {
     bool startupLoop = true;
     int currentStartupLocation = 0;
 
+    ProgramState state
+    {
+        .ChangedMenu = true
+    };
+
+    bool inMenu = true;
+
     while (true) {
 
         const float deltaTime = calculateDeltaTime();
@@ -318,9 +395,15 @@ int main() {
         {
             encoderChangedThisFrame =true;
             encoder_update();
+            lcd->SetCursor(0,20-5);
+            char num[32];
+            sprintf(num, "%5d", encoder_position);
+            printf("%5d\n",encoder_position);
+            lcd->PrintString(num);
         }
         else{
             encoderChangedThisFrame = false;
+            encoderDirection = 0;
         }
 
         if(EncoderSwitch())
@@ -340,12 +423,14 @@ int main() {
                 buttonPreviouslyPressed = false;
                 holdButtonCurrentTimer = 0.0f;
                 encoder_position = 0;
+                encoderDirection = 0;
                 framesOutsideRange = 0;
                 previouslyMoving = false;
                 encoderChangedThisFrame = false;
                 startupLoop = true;
                 currentStartupLocation = 0;
                 last_state  = 0;
+                inMenu = true;
             }
             else if(buttonPreviouslyPressed)
             {
@@ -357,6 +442,26 @@ int main() {
             }
 
             holdButtonCurrentTimer = 0.0f;
+        }
+
+
+        if(inMenu)
+        {
+            if(encoderChangedThisFrame)
+            {
+                if(encoderDirection > 0)
+                {
+                    state.SelectedItem = min(state.SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
+                }
+                else if(encoderDirection < 0)
+                {
+                    state.SelectedItem = max(state.SelectedItem - 1 ,0);
+                }
+            }
+
+            UI_DrawMainMenu(deltaTime,&state, lcd);
+
+            continue;
         }
 
         // when we first start or reset the device enter a mode
