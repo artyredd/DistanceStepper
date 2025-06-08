@@ -9,6 +9,12 @@
 #include <functional>
 #include <vector>
 
+#define abs(value) ((value) < 0 ? (-value) : (value))
+#define max(value,upper) ((value) < (upper) ? upper : value)
+#define min(value,lower) ((value) > (lower) ? lower : value)
+
+typedef LCD_I2C* Display;
+
 // distance sensor
 #define IR_SENSOR_ADC_PIN 26  // GPIO 26 == ADC0
 
@@ -23,18 +29,10 @@
 #define MOTOR_DELAY_US 175
 #define MOTOR_STEPS_PER_FRAME 1
 
-// limit switches
-#define LIMIT_Z_MIN_PIN 3
-#define LIMIT_Z_MAX_PIN 5
-
 // encoder
 #define ENCODER_SW 8
 #define ENCODER_CLK 9
 #define ENCODER_DATA 17
-
-#define abs(value) ((value) < 0 ? (-value) : (value))
-#define max(value,upper) ((value) < (upper) ? upper : value)
-#define min(value,lower) ((value) > (lower) ? lower : value)
 
 
 float min = 9999.0f;
@@ -83,60 +81,7 @@ void init_sensor_pins()
     adc_select_input(0);  // ADC0
 }
 
-void init_motor_pins()
-{
-    printf("Initializing motors\n");
-
-    gpio_init(STEP_PIN);
-    gpio_set_dir(STEP_PIN, GPIO_OUT);
-    gpio_put(STEP_PIN, 0);
-
-    gpio_init(ENABLE_PIN);
-    gpio_set_dir(ENABLE_PIN, GPIO_OUT);
-    gpio_put(ENABLE_PIN, 1);
-
-    gpio_init(DIR_PIN);
-    gpio_set_dir(DIR_PIN, GPIO_OUT);
-    gpio_put(DIR_PIN, 0);
-
-    gpio_init(MOTOR_OUT_PIN);
-    gpio_set_dir(MOTOR_OUT_PIN, GPIO_OUT);
-    gpio_put(MOTOR_OUT_PIN, 1);
-}
-
-void init_limit_pins()
-{
-    gpio_init(LIMIT_Z_MIN_PIN);
-    gpio_set_dir(LIMIT_Z_MIN_PIN, GPIO_IN);
-    gpio_pull_down(LIMIT_Z_MIN_PIN);
-
-    gpio_init(LIMIT_Z_MAX_PIN);
-    gpio_set_dir(LIMIT_Z_MAX_PIN, GPIO_IN);
-    gpio_pull_down(LIMIT_Z_MAX_PIN);
-}
-
-void step_motor(int steps, bool direction, int delay_us) {
-    gpio_put(ENABLE_PIN, 0);
-    gpio_put(DIR_PIN, direction);
-    for (int i = 0; i < steps; ++i) {
-        zLimitMin = gpio_get(LIMIT_Z_MIN_PIN) && !direction;
-        zLimitMax = gpio_get(LIMIT_Z_MAX_PIN) && direction;
-        if(zLimitMin || zLimitMax)
-        {
-            gpio_put(STEP_PIN, 0);
-            return;
-        }
-        else{
-            gpio_put(STEP_PIN, 1);
-            sleep_us(delay_us);
-            gpio_put(STEP_PIN, 0);
-            sleep_us(delay_us);
-        }
-    }
-    gpio_put(ENABLE_PIN, 1);
-}
-
-LCD_I2C* init_display()
+Display init_display()
 {
     printf("Initializing dislay\n");
     i2c_inst* I2C = i2c0;
@@ -227,6 +172,74 @@ struct Timer
         Reset();
 
         return result;
+    }
+};
+
+struct StepMotor
+{
+public:
+    int Position = 0;
+    bool Direction;
+
+    void Init()
+    {
+        printf("Initializing motors\n");
+
+        gpio_init(STEP_PIN);
+        gpio_set_dir(STEP_PIN, GPIO_OUT);
+        gpio_put(STEP_PIN, 0);
+
+        gpio_init(ENABLE_PIN);
+        gpio_set_dir(ENABLE_PIN, GPIO_OUT);
+        gpio_put(ENABLE_PIN, 1);
+
+        gpio_init(DIR_PIN);
+        gpio_set_dir(DIR_PIN, GPIO_OUT);
+        gpio_put(DIR_PIN, 0);
+
+        gpio_init(MOTOR_OUT_PIN);
+        gpio_set_dir(MOTOR_OUT_PIN, GPIO_OUT);
+        gpio_put(MOTOR_OUT_PIN, 1);
+    }
+
+    void Enable()
+    {
+        gpio_put(ENABLE_PIN, 0);
+    }
+
+    void Disable()
+    {
+        gpio_put(ENABLE_PIN, 1);
+    }
+
+    void SetDirection(bool direction)
+    {
+        gpio_put(DIR_PIN, direction);
+        Direction = direction;
+    }
+
+    void Step(int delay_us)
+    {
+        if(Direction)
+        {
+            Position++;
+        }else{
+            Position--;
+        }
+        
+        gpio_put(STEP_PIN, 1);
+        sleep_us(delay_us);
+        gpio_put(STEP_PIN, 0);
+        sleep_us(delay_us);
+    }
+
+    void TurnSimple(int steps, bool direction, int delay_us) {
+        Enable();
+        SetDirection(direction);
+        for (int i = 0; i < steps; ++i) {
+            Step(delay_us);
+        }
+        Disable();
     }
 };
 
@@ -369,12 +382,23 @@ public:
     {
         return !gpio_get(ENCODER_SW);
     }
-};
 
+    void Print(Display display)
+    {
+        display->SetCursor(0,20-5);
+        
+        printf("%5d\n",Position);
+
+        char num[32];
+        sprintf(num, "%5d", Position);
+        display->PrintString(num);
+    }
+};
 
 struct ProgramState
 {
     RotaryEncoder Encoder;
+    StepMotor Motor;
 
     int SelectedItem;
     int PreviousSelectedItem;
@@ -434,17 +458,6 @@ int main() {
     printf("Initialized stdio\n");
     sleep_ms(2000);
     
-    init_sensor_pins();
-    init_limit_pins();
-
-    init_led_pins();
-
-    init_motor_pins();
-
-    step_motor(1000, true, MOTOR_DELAY_US);
-    sleep_ms(50);
-    step_motor(1000, false, MOTOR_DELAY_US);
-
     auto lcd = init_display();
 
     lcd->SetBacklight(true);
@@ -455,6 +468,16 @@ int main() {
     {
         .ChangedMenu = true,
     };
+
+    init_sensor_pins();
+
+    init_led_pins();
+
+    state.Motor.Init();
+
+    state.Motor.TurnSimple(1000, true, MOTOR_DELAY_US);
+    sleep_ms(50);
+    state.Motor.TurnSimple(1000, false, MOTOR_DELAY_US);
 
     state.Encoder.Init();
 
@@ -471,11 +494,7 @@ int main() {
         {
             if(state.Encoder.ChangedThisFrame)
             {
-                lcd->SetCursor(0,20-5);
-                char num[32];
-                sprintf(num, "%5d", state.Encoder.Position);
-                printf("%5d\n",state.Encoder.Position);
-                lcd->PrintString(num);
+                state.Encoder.Print(lcd);
 
                 if(state.Encoder.Direction > 0)
                 {
