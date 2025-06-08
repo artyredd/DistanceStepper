@@ -30,8 +30,6 @@
 #define ENCODER_CLK 9
 #define ENCODER_DATA 17
 
-#define DISTANCE_PRECISION 1000
-
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
 #define min(value,lower) ((value) > (lower) ? lower : value)
@@ -44,16 +42,6 @@ float value = 0.0f;
 volatile bool zLimitMin = false;
 volatile bool zLimitMax = false;
 
-volatile int encoder_position = 0;
-volatile uint8_t last_state = 0;
-// -1 is left, 0 is no direction, 1 is right
-volatile int encoderDirection = 0;
-
-uint8_t clk = 0;
-uint8_t data = 0;
-uint8_t new_state = 0;
-
-volatile bool encoder_flag = false;
 
 void fill_meter(char* meter, int size, int value)
 {
@@ -83,7 +71,7 @@ int get_distance()
         range = max - min;
     }
 
-    int value = voltage * DISTANCE_PRECISION;
+    int value = voltage * 1000;
 
     fprintf(stdout, "%li :", value);
 
@@ -140,71 +128,6 @@ void init_limit_pins()
     gpio_pull_down(LIMIT_Z_MAX_PIN);
 }
 
-void encoder_update() {
-    if ((last_state == 0b00 && new_state == 0b01) ||
-        (last_state == 0b01 && new_state == 0b11) ||
-        (last_state == 0b11 && new_state == 0b10) ||
-        (last_state == 0b10 && new_state == 0b00)) 
-    {
-        if(encoderDirection != -1)
-        {
-            encoder_position++;  // CW
-            last_state = new_state;
-            encoderDirection = 1;
-        }
-        else
-        {
-            encoderDirection = 0;
-        }
-    } 
-    else if (
-        (last_state == 0b00 && new_state == 0b10) ||
-        (last_state == 0b10 && new_state == 0b11) ||
-        (last_state == 0b11 && new_state == 0b01) ||
-        (last_state == 0b01 && new_state == 0b00)) 
-    {
-        if(encoderDirection != 1)
-        {
-            encoder_position--;  // CCW
-            last_state = new_state;
-            encoderDirection = -1;
-        }
-        else
-        {
-            encoderDirection = 0;
-        }
-    }
-}
-
-bool encoderIsDifferent()
-{
-    clk = gpio_get(ENCODER_CLK);
-    data = gpio_get(ENCODER_DATA);
-    
-    new_state = (clk << 1) | data;
-    
-    return new_state != last_state;
-}
-
-void init_encoder_pins()
-{
-    printf("Initializing encoder\n");
-
-    gpio_init(ENCODER_CLK);
-    gpio_set_dir(ENCODER_CLK, GPIO_IN);
-    gpio_pull_up(ENCODER_CLK);
-
-    gpio_init(ENCODER_DATA);
-    gpio_set_dir(ENCODER_DATA, GPIO_IN);
-    gpio_pull_up(ENCODER_DATA);
-
-    gpio_init(ENCODER_SW);
-    gpio_set_dir(ENCODER_SW, GPIO_IN);
-    gpio_pull_up(ENCODER_SW);
-
-    last_state = (gpio_get(ENCODER_CLK) << 1) | gpio_get(ENCODER_DATA);
-}
-
 void step_motor(int steps, bool direction, int delay_us) {
     gpio_put(ENABLE_PIN, 0);
     gpio_put(DIR_PIN, direction);
@@ -224,28 +147,6 @@ void step_motor(int steps, bool direction, int delay_us) {
         }
     }
     gpio_put(ENABLE_PIN, 1);
-}
-
-bool EncoderSwitch()
-{
-    return !gpio_get(ENCODER_SW);
-}
-
-int scanForDisplay()
-{
-    printf("Attempting to find serial devices\n");
-    for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
-        int ret = i2c_write_blocking(i2c0, addr, NULL, 0, false);
-        if (ret >= 0)
-        {
-            printf("Found device at 0x%02x\n", addr);
-            return addr;
-        }
-    }
-
-    printf("No serial devices found\n");
-
-    return 0x27;
 }
 
 LCD_I2C* init_display()
@@ -277,6 +178,90 @@ LCD_I2C* init_display()
 
     return result;
 }
+
+struct RotaryEncoder
+{
+private:
+    uint8_t LastState = 0;
+    uint8_t NewState = 0;
+
+    uint8_t clk = 0;
+    uint8_t data = 0;
+public:
+    int Position = 0;
+    int Direction = 0;
+
+    void Init()
+    {
+        printf("Initializing encoder\n");
+
+        gpio_init(ENCODER_CLK);
+        gpio_set_dir(ENCODER_CLK, GPIO_IN);
+        gpio_pull_up(ENCODER_CLK);
+
+        gpio_init(ENCODER_DATA);
+        gpio_set_dir(ENCODER_DATA, GPIO_IN);
+        gpio_pull_up(ENCODER_DATA);
+
+        gpio_init(ENCODER_SW);
+        gpio_set_dir(ENCODER_SW, GPIO_IN);
+        gpio_pull_up(ENCODER_SW);
+
+        LastState = (gpio_get(ENCODER_CLK) << 1) | gpio_get(ENCODER_DATA);
+    }
+
+    void Update() 
+    {
+        if ((LastState == 0b00 && NewState == 0b01) ||
+            (LastState == 0b01 && NewState == 0b11) ||
+            (LastState == 0b11 && NewState == 0b10) ||
+            (LastState == 0b10 && NewState == 0b00)) 
+        {
+            if(Direction != -1)
+            {
+                Position++;  // CW
+                LastState = NewState;
+                Direction = 1;
+            }
+            else
+            {
+                Direction = 0;
+            }
+        } 
+        else if (
+            (LastState == 0b00 && NewState == 0b10) ||
+            (LastState == 0b10 && NewState == 0b11) ||
+            (LastState == 0b11 && NewState == 0b01) ||
+            (LastState == 0b01 && NewState == 0b00)) 
+        {
+            if(Direction != 1)
+            {
+                Position--;  // CCW
+                LastState = NewState;
+                Direction = -1;
+            }
+            else
+            {
+                Direction = 0;
+            }
+        }
+    }
+
+    bool Different()
+    {
+        clk = gpio_get(ENCODER_CLK);
+        data = gpio_get(ENCODER_DATA);
+        
+        NewState = (clk << 1) | data;
+        
+        return NewState != LastState;
+    }
+
+    bool Pressed()
+    {
+        return !gpio_get(ENCODER_SW);
+    }
+};
 
 uint64_t last_time = time_us_64();
 
@@ -328,6 +313,8 @@ struct Timer
 
 struct ProgramState
 {
+    RotaryEncoder Encoder;
+
     int SelectedItem;
     int PreviousSelectedItem;
 
@@ -405,14 +392,6 @@ int main() {
     sleep_ms(50);
     step_motor(1000, false, MOTOR_DELAY_US);
 
-    init_encoder_pins();
-
-    auto lcd = init_display();
-
-    lcd->SetBacklight(true);
-    lcd->SetCursor(0,1);
-    lcd->PrintString("ARFsuits.com");
-
     ProgramState state
     {
         .ChangedMenu = true,
@@ -421,29 +400,39 @@ int main() {
         }
     };
 
+    state.Encoder.Init();
+
+    auto lcd = init_display();
+
+    lcd->SetBacklight(true);
+    lcd->SetCursor(0,1);
+    lcd->PrintString("ARFsuits.com");
+
+    
+
     bool inMenu = true;
 
     while (true) {
 
         const float deltaTime = calculateDeltaTime();
         
-        if(encoderIsDifferent())
+        if(state.Encoder.Different())
         {
             state.EncoderChangedThisFrame =true;
-            encoder_update();
+            state.Encoder.Update();
 
             lcd->SetCursor(0,20-5);
             char num[32];
-            sprintf(num, "%5d", encoder_position);
-            printf("%5d\n",encoder_position);
+            sprintf(num, "%5d", state.Encoder.Position);
+            printf("%5d\n",state.Encoder.Position);
             lcd->PrintString(num);
         }
         else{
             state.EncoderChangedThisFrame = false;
-            encoderDirection = 0;
+            state.Encoder.Direction = 0;
         }
 
-        if(EncoderSwitch())
+        if(state.Encoder.Pressed())
         {
             state.ButtonHeldTimer.Update(deltaTime);
 
@@ -474,11 +463,11 @@ int main() {
         {
             if(state.EncoderChangedThisFrame)
             {
-                if(encoderDirection > 0)
+                if(state.Encoder.Direction > 0)
                 {
                     state.SelectedItem = min(state.SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
                 }
-                else if(encoderDirection < 0)
+                else if(state.Encoder.Direction < 0)
                 {
                     state.SelectedItem = max(state.SelectedItem - 1 ,0);
                 }
