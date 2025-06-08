@@ -386,7 +386,7 @@ struct ProgramState
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 4
 
-#define MENU(name) void UI_##name(const float deltaTime, ProgramState* state, LCD_I2C* display)
+#define MENU(name) void UI_##name(ProgramState* state, LCD_I2C* display)
 
 MENU(DrawMainMenu)
 {
@@ -487,7 +487,7 @@ int main() {
                 }
             }
 
-            UI_DrawMainMenu(Time.deltaTime,&state, lcd);
+            UI_DrawMainMenu(&state, lcd);
 
             continue;
         }
