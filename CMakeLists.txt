@@ -30,12 +30,14 @@ include(pico_sdk_import.cmake)
 
 project(DistanceStepper C CXX ASM)
 
+set(PICO_DEFAULT_I2C_INSTANCE 0)
+
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(DistanceStepper DistanceStepper.cpp )
+add_executable(DistanceStepper DistanceStepper.cpp external/LCD_I2C.hpp external/LCD_I2C.cpp)
 
 pico_set_program_name(DistanceStepper "DistanceStepper")
 pico_set_program_version(DistanceStepper "0.1")

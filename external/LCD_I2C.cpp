@@ -8,17 +8,27 @@
  ******************************************************************************/
 
 #include "LCD_I2C.hpp"
+#include "stdio.h"
 
 LCD_I2C::LCD_I2C(byte address, byte columns, byte rows, i2c_inst * I2C, uint SDA, uint SCL) noexcept
         : address(address), columns(columns), rows(rows), backlight(NO_BACKLIGHT), I2C_instance(I2C)
 {
     static constexpr size_t BAUD_RATE = 100'000;
 
+    printf("Initializing i2c\n");
     i2c_init(I2C, BAUD_RATE);
+
+    printf("Setting gpio function SDA\n");
     gpio_set_function(SDA, GPIO_FUNC_I2C);
+
+    printf("Setting gpio function SCL\n");
     gpio_set_function(SCL, GPIO_FUNC_I2C);
+
+    printf("Setting ic2 pins\n");
     gpio_pull_up(SDA);
     gpio_pull_up(SCL);
+
+    printf("Initializing LCD_I2C\n");
     Init();
 }
 

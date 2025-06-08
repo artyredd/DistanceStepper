@@ -169,7 +169,7 @@ class LCD_I2C final
      * @param SDA The serial data pin
      * @param SCL The serial clock pin
      */
-    LCD_I2C(byte address, byte columns, byte rows, i2c_inst * I2C = PICO_DEFAULT_I2C_INSTANCE,
+    LCD_I2C(byte address, byte columns, byte rows, i2c_inst * I2C = i2c0,
             uint SDA = PICO_DEFAULT_I2C_SDA_PIN, uint SCL = PICO_DEFAULT_I2C_SCL_PIN) noexcept;
 
     /**
