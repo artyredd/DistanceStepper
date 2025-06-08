@@ -6,6 +6,8 @@
 #include <hardware/i2c.h>
 #include "pico/binary_info.h"
 #include <string>
+#include <functional>
+#include <vector>
 
 // distance sensor
 #define IR_SENSOR_ADC_PIN 26  // GPIO 26 == ADC0
@@ -41,21 +43,6 @@ float range = 0.0f;
 float value = 0.0f;
 volatile bool zLimitMin = false;
 volatile bool zLimitMax = false;
-
-
-void fill_meter(char* meter, int size, int value)
-{
-    for(int i = 0; i < 100;i++)
-    {
-        meter[i] = ' ';
-    }
-
-    // fill meter
-    for(int i = 0; i < value; i++)
-    {
-        meter[i] = '#';
-    }
-}
 
 int get_distance()
 {
@@ -179,6 +166,70 @@ LCD_I2C* init_display()
     return result;
 }
 
+struct GlobalTime
+{
+public:
+    // Last Calculated deltaTime, needs Update() to be ran at the beginning of the main loop
+    // before this will update
+    float deltaTime;
+
+    float Update()
+    {
+        uint64_t now = time_us_64();
+        float dt = (now - last_time) / 1e6f; // delta time in seconds
+        last_time = now;
+
+        deltaTime = dt;
+
+        return dt;
+    }
+
+private:
+    uint64_t last_time = time_us_64();
+};
+
+static GlobalTime Time;
+
+struct Timer
+{
+    float Length;
+    float Value;
+
+    Timer() = default;
+    Timer(float length) : Length(length){}
+
+    void Update()
+    {
+        Value += Time.deltaTime;
+    }
+
+    bool UpdateAndCheck()
+    {
+        Update();
+
+        return Value >= Length;
+    }
+
+    bool Check()
+    {
+        return Value >= Length;
+    }
+
+    void Reset()
+    {
+        Value = 0.0f;
+    }
+
+    bool CheckAndReset()
+    {
+        bool result = Value >= Length;
+
+        Reset();
+
+        return result;
+    }
+};
+
 struct RotaryEncoder
 {
 private:
@@ -188,8 +239,23 @@ private:
     uint8_t clk = 0;
     uint8_t data = 0;
 public:
+    Timer ButtonHeldTimer = Timer(2);
+
     int Position = 0;
     int Direction = 0;
+
+    bool ChangedThisFrame = false;
+
+    // Whether or not the user is pressing the button, does not neccessarily mean
+    // it started or ended this frame
+    bool ButtonPressedThisFrame = false;
+    bool ButtonPreviouslyPressed = false;
+    // first frame the button was released after pressing
+    bool ButtonUpThisFrame = false;
+    // First frame that the button was held for longer than the timer length
+    bool ButtonHeldThisFrame = false;
+    // First frame the button is pressed
+    bool ButtonDownThisFrame = false;
 
     void Init()
     {
@@ -210,7 +276,49 @@ public:
         LastState = (gpio_get(ENCODER_CLK) << 1) | gpio_get(ENCODER_DATA);
     }
 
-    void Update() 
+    void Update()
+    {
+        ButtonHeldThisFrame = false;
+        ButtonUpThisFrame = false;
+
+        if(Different())
+        {
+            ChangedThisFrame = true;
+            Recalculate();
+        }
+        else{
+            ChangedThisFrame = false;
+            Direction = 0;
+        }
+
+        ButtonPressedThisFrame = Pressed();
+
+        if(ButtonPressedThisFrame)
+        {
+            ButtonHeldTimer.Update();
+
+            if(!ButtonPreviouslyPressed)
+            {
+                ButtonPreviouslyPressed = true;
+                ButtonDownThisFrame = true;
+            }
+        }
+        else {
+            if(ButtonHeldTimer.CheckAndReset())
+            {
+                ButtonHeldThisFrame = true;
+            }
+            else if(ButtonPreviouslyPressed)
+            {
+                ButtonUpThisFrame = true;
+
+                ButtonPreviouslyPressed = false;
+            }
+        }
+
+    }
+
+    void Recalculate() 
     {
         if ((LastState == 0b00 && NewState == 0b01) ||
             (LastState == 0b01 && NewState == 0b11) ||
@@ -263,53 +371,6 @@ public:
     }
 };
 
-uint64_t last_time = time_us_64();
-
-float calculateDeltaTime()
-{
-    uint64_t now = time_us_64();
-    float dt = (now - last_time) / 1e6f; // delta time in seconds
-    last_time = now;
-
-    return dt;
-}
-
-struct Timer
-{
-    float Length;
-    float Time;
-
-    void Update(float deltaTime)
-    {
-        Time += deltaTime;
-    }
-
-    bool UpdateAndCheck(float deltaTime)
-    {
-        Update(deltaTime);
-
-        return Time >= Length;
-    }
-
-    bool Check()
-    {
-        return Time >= Length;
-    }
-
-    void Reset()
-    {
-        Time = 0.0f;
-    }
-
-    bool CheckAndReset()
-    {
-        bool result = Time >= Length;
-
-        Reset();
-
-        return result;
-    }
-};
 
 struct ProgramState
 {
@@ -321,14 +382,6 @@ struct ProgramState
     bool Paused;
 
     bool ChangedMenu;
-
-    bool ButtonPressedThisFrame;
-    bool ButtonUpThisFrame;
-    bool ButtonPreviouslyPressed;
-
-    bool EncoderChangedThisFrame;
-
-    Timer ButtonHeldTimer;
 };
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 4
@@ -369,7 +422,7 @@ MENU(DrawMainMenu)
         display->PrintChar('>');
     }
 
-    if(state->ButtonUpThisFrame)
+    if(state->Encoder.ButtonUpThisFrame)
     {
         printf("%s",options[state->SelectedItem]);
     }
@@ -392,77 +445,38 @@ int main() {
     sleep_ms(50);
     step_motor(1000, false, MOTOR_DELAY_US);
 
-    ProgramState state
-    {
-        .ChangedMenu = true,
-        .ButtonHeldTimer = {
-            .Length = 2
-        }
-    };
-
-    state.Encoder.Init();
-
     auto lcd = init_display();
 
     lcd->SetBacklight(true);
     lcd->SetCursor(0,1);
     lcd->PrintString("ARFsuits.com");
 
-    
+    ProgramState state
+    {
+        .ChangedMenu = true,
+    };
+
+    state.Encoder.Init();
 
     bool inMenu = true;
 
     while (true) {
 
-        const float deltaTime = calculateDeltaTime();
+        // make sure to update deltaTime
+        Time.Update();
         
-        if(state.Encoder.Different())
-        {
-            state.EncoderChangedThisFrame =true;
-            state.Encoder.Update();
-
-            lcd->SetCursor(0,20-5);
-            char num[32];
-            sprintf(num, "%5d", state.Encoder.Position);
-            printf("%5d\n",state.Encoder.Position);
-            lcd->PrintString(num);
-        }
-        else{
-            state.EncoderChangedThisFrame = false;
-            state.Encoder.Direction = 0;
-        }
-
-        if(state.Encoder.Pressed())
-        {
-            state.ButtonHeldTimer.Update(deltaTime);
-
-            state.ButtonPressedThisFrame = true;
-        }else
-        {
-            if(state.ButtonHeldTimer.Check())
-            {
-                // reset everything
-                fprintf(stdout,"RESET\n");
-                inMenu = true;
-            }
-            else if(state.ButtonPreviouslyPressed)
-            {
-                state.ButtonPressedThisFrame = false;
-                state.ButtonUpThisFrame = true;
-                state.ButtonPreviouslyPressed = false;
-
-                state.Paused = !state.Paused;
-
-                fprintf(stdout,"%s\n",state.Paused ? "PAUSED" : "UNPAUSED");
-            }
-            
-            state.ButtonHeldTimer.Reset();
-        }
+        state.Encoder.Update();
 
         if(inMenu)
         {
-            if(state.EncoderChangedThisFrame)
+            if(state.Encoder.ChangedThisFrame)
             {
+                lcd->SetCursor(0,20-5);
+                char num[32];
+                sprintf(num, "%5d", state.Encoder.Position);
+                printf("%5d\n",state.Encoder.Position);
+                lcd->PrintString(num);
+
                 if(state.Encoder.Direction > 0)
                 {
                     state.SelectedItem = min(state.SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
@@ -473,7 +487,7 @@ int main() {
                 }
             }
 
-            UI_DrawMainMenu(deltaTime,&state, lcd);
+            UI_DrawMainMenu(Time.deltaTime,&state, lcd);
 
             continue;
         }
