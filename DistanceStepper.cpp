@@ -289,11 +289,59 @@ float calculateDeltaTime()
     return dt;
 }
 
+struct Timer
+{
+    float Length;
+    float Time;
+
+    void Update(float deltaTime)
+    {
+        Time += deltaTime;
+    }
+
+    bool UpdateAndCheck(float deltaTime)
+    {
+        Update(deltaTime);
+
+        return Time >= Length;
+    }
+
+    bool Check()
+    {
+        return Time >= Length;
+    }
+
+    void Reset()
+    {
+        Time = 0.0f;
+    }
+
+    bool CheckAndReset()
+    {
+        bool result = Time >= Length;
+
+        Reset();
+
+        return result;
+    }
+};
+
 struct ProgramState
 {
     int SelectedItem;
     int PreviousSelectedItem;
+
+    bool Paused;
+
     bool ChangedMenu;
+
+    bool ButtonPressedThisFrame;
+    bool ButtonUpThisFrame;
+    bool ButtonPreviouslyPressed;
+
+    bool EncoderChangedThisFrame;
+
+    Timer ButtonHeldTimer;
 };
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 4
@@ -302,15 +350,15 @@ struct ProgramState
 
 MENU(DrawMainMenu)
 {
-    if(state->PreviousSelectedItem != state->SelectedItem)
-    {
-        const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
+    static const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
             "Calibrate",
             "Start",
             "Info",
             "Back"
         };
 
+    if(state->PreviousSelectedItem != state->SelectedItem)
+    {
         if(state->ChangedMenu)
         {
             state->ChangedMenu = false;
@@ -333,6 +381,11 @@ MENU(DrawMainMenu)
         display->SetCursor(state->SelectedItem,0);
         display->PrintChar('>');
     }
+
+    if(state->ButtonUpThisFrame)
+    {
+        printf("%s",options[state->SelectedItem]);
+    }
 }
 
 int main() {
@@ -347,6 +400,7 @@ int main() {
     init_led_pins();
 
     init_motor_pins();
+
     step_motor(1000, true, MOTOR_DELAY_US);
     sleep_ms(50);
     step_motor(1000, false, MOTOR_DELAY_US);
@@ -357,32 +411,14 @@ int main() {
 
     lcd->SetBacklight(true);
     lcd->SetCursor(0,1);
-    lcd->PrintString("Arfsuits.com");
-
-    int defaultDesiredDistance = 3133;
-    const int defaultVariation = 10;
-    const int maxFramesOutsideRangeBeforeMovement = 7;
-
-    int baseDesiredDistace = defaultDesiredDistance;
-
-    float holdButtonCurrentTimer = 0.0f;
-    float holdButtonTimerLength = 1.5f;
-
-    bool paused = false;
-
-    bool buttonPreviouslyPressed = false;
-
-    int framesOutsideRange = 0;
-    bool previouslyMoving = false;
-
-    bool encoderChangedThisFrame = false;
-
-    bool startupLoop = true;
-    int currentStartupLocation = 0;
+    lcd->PrintString("ARFsuits.com");
 
     ProgramState state
     {
-        .ChangedMenu = true
+        .ChangedMenu = true,
+        .ButtonHeldTimer = {
+            .Length = 2
+        }
     };
 
     bool inMenu = true;
@@ -393,8 +429,9 @@ int main() {
         
         if(encoderIsDifferent())
         {
-            encoderChangedThisFrame =true;
+            state.EncoderChangedThisFrame =true;
             encoder_update();
+
             lcd->SetCursor(0,20-5);
             char num[32];
             sprintf(num, "%5d", encoder_position);
@@ -402,52 +439,40 @@ int main() {
             lcd->PrintString(num);
         }
         else{
-            encoderChangedThisFrame = false;
+            state.EncoderChangedThisFrame = false;
             encoderDirection = 0;
         }
 
         if(EncoderSwitch())
         {
-            holdButtonCurrentTimer += deltaTime;
+            state.ButtonHeldTimer.Update(deltaTime);
 
-            buttonPreviouslyPressed = true;
+            state.ButtonPressedThisFrame = true;
         }else
         {
-            if(holdButtonCurrentTimer >= holdButtonTimerLength)
+            if(state.ButtonHeldTimer.Check())
             {
                 // reset everything
                 fprintf(stdout,"RESET\n");
-
-                baseDesiredDistace = defaultDesiredDistance;
-                paused = false;
-                buttonPreviouslyPressed = false;
-                holdButtonCurrentTimer = 0.0f;
-                encoder_position = 0;
-                encoderDirection = 0;
-                framesOutsideRange = 0;
-                previouslyMoving = false;
-                encoderChangedThisFrame = false;
-                startupLoop = true;
-                currentStartupLocation = 0;
-                last_state  = 0;
                 inMenu = true;
             }
-            else if(buttonPreviouslyPressed)
+            else if(state.ButtonPreviouslyPressed)
             {
-                buttonPreviouslyPressed = false;
+                state.ButtonPressedThisFrame = false;
+                state.ButtonUpThisFrame = true;
+                state.ButtonPreviouslyPressed = false;
 
-                paused = !paused;
+                state.Paused = !state.Paused;
 
-                fprintf(stdout,"%s\n",paused ? "PAUSED" : "UNPAUSED");
+                fprintf(stdout,"%s\n",state.Paused ? "PAUSED" : "UNPAUSED");
             }
-
-            holdButtonCurrentTimer = 0.0f;
+            
+            state.ButtonHeldTimer.Reset();
         }
-
 
         if(inMenu)
         {
-            if(encoderChangedThisFrame)
+            if(state.EncoderChangedThisFrame)
             {
                 if(encoderDirection > 0)
                 {
@@ -462,74 +487,6 @@ int main() {
             UI_DrawMainMenu(deltaTime,&state, lcd);
 
             continue;
-        }
-
-        // when we first start or reset the device enter a mode
-        // where the user can use the wheel to set the desired height
-        // and when the user pressed the pause/resume button start moving
-        if(startupLoop)
-        {
-            // if the user presses "pause" while in startup loop
-            // resume normal operation
-            if(paused)
-            {   
-                startupLoop = false;
-                paused = false;
-                // since the user uses the wheel when starting up
-                // reset the position when they resume
-                encoder_position = 0;
-
-                // whenever the user resumes default to the distance they chose
-                baseDesiredDistace = get_distance();
-
-                continue;
-            }
-
-            if(currentStartupLocation != encoder_position)
-            {
-                const int difference = encoder_position - currentStartupLocation;
-                
-                const bool direction = difference < 0;
-
-                currentStartupLocation = encoder_position;
-
-                step_motor(abs(difference), direction, MOTOR_DELAY_US);
-            }
-            
-            continue;
-        }
-
-        if(paused)
-        {
-            continue;
-        }
-
-        int distance  = get_distance();
-
-        const int desiredDistance = baseDesiredDistace + encoder_position;
-
-        // figure what direction the motor needs to go in order to reach the desired distance
-        const int difference = distance - desiredDistance;
-
-        const bool outsideOfRange  = abs(difference) > defaultVariation;
-
-        if(outsideOfRange)
-        {
-            framesOutsideRange++;
-            // if we were moving last frame we should move again this frame if we're still outside
-            // the range, EVEN if we haven't be outside the range again for several frames
-            if((framesOutsideRange >= maxFramesOutsideRangeBeforeMovement) || encoderChangedThisFrame)
-            {
-                framesOutsideRange = 0;
-
-                const bool direction = difference > 0;
-
-                step_motor(MOTOR_STEPS_PER_FRAME, direction, MOTOR_DELAY_US);
-            }
-        }
-        else
-        {
-            framesOutsideRange = 0;
         }
     }
 }
