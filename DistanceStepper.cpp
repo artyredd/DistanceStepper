@@ -269,6 +269,8 @@ public:
     bool ButtonHeldThisFrame = false;
     // First frame the button is pressed
     bool ButtonDownThisFrame = false;
+    
+    bool ButtonUpLastFrame = false;
 
     void Init()
     {
@@ -289,7 +291,7 @@ public:
         LastState = (gpio_get(ENCODER_CLK) << 1) | gpio_get(ENCODER_DATA);
     }
 
-    void Update()
+    int Update()
     {
         ButtonHeldThisFrame = false;
         ButtonUpThisFrame = false;
@@ -323,12 +325,19 @@ public:
             }
             else if(ButtonPreviouslyPressed)
             {
-                ButtonUpThisFrame = true;
+                // debounce button up.
+                // Human paws are slow and sometimes the up fires twice or ten times
+                if(!ButtonUpLastFrame)
+                {
+                    ButtonUpLastFrame = false;
+                    ButtonUpThisFrame = true;
+                }
 
                 ButtonPreviouslyPressed = false;
             }
         }
 
+        return Position;
     }
 
     void Recalculate() 
@@ -412,6 +421,23 @@ struct ProgramState
 
 #define MENU(name) void UI_##name(ProgramState* state, LCD_I2C* display)
 
+MENU(UpdateSelectedItem)
+{
+    if(state->Encoder.ChangedThisFrame)
+    {
+        state->Encoder.Print(display);
+
+        if(state->Encoder.Direction > 0)
+        {
+            state->SelectedItem = min(state->SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
+        }
+        else if(state->Encoder.Direction < 0)
+        {
+            state->SelectedItem = max(state->SelectedItem - 1 ,0);
+        }
+    }
+}
+
 MENU(DrawMainMenu)
 {
     static const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
@@ -421,35 +447,54 @@ MENU(DrawMainMenu)
             "Back"
         };
 
-    if(state->PreviousSelectedItem != state->SelectedItem)
+    display->Clear();
+    for(int i = 0; i < NUMBER_OF_MAIN_MENU_ITEMS; i++)
     {
-        if(state->ChangedMenu)
+        display->SetCursor(i,1);
+
+        display->PrintString(options[i]);
+    }
+
+    do{
+        UI_UpdateSelectedItem(state, display);
+
+        if(state->PreviousSelectedItem != state->SelectedItem)
         {
-            state->ChangedMenu = false;
+            // clear arrows
+            display->SetCursor(state->PreviousSelectedItem,0);
+            display->PrintChar(' ');
 
-            display->Clear();
-            for(int i = 0; i < NUMBER_OF_MAIN_MENU_ITEMS; i++)
-            {
-                display->SetCursor(i,1);
+            state->PreviousSelectedItem = state->SelectedItem;
 
-                display->PrintString(options[i]);
-            }
+            display->SetCursor(state->SelectedItem,0);
+            display->PrintChar('>');
         }
 
-        // clear arrows
-        display->SetCursor(state->PreviousSelectedItem,0);
-        display->PrintChar(' ');
+        if(state->Encoder.ButtonUpThisFrame)
+        {
+            // since we selected a different menu exit this UI loop
+            printf("%s:%li\n",options[state->SelectedItem],state->SelectedItem);
+            return;
+        }
+    } while(Time.Update() + state->Encoder.Update());
+}
 
-        state->PreviousSelectedItem = state->SelectedItem;
+MENU(DrawInfo)
+{
+    display->Clear();
+    display->SetCursor(0,8);
+    display->PrintString("Info");
+    display->SetCursor(3,0);
+    display->PrintString("> Back");
 
-        display->SetCursor(state->SelectedItem,0);
-        display->PrintChar('>');
-    }
-
-    if(state->Encoder.ButtonUpThisFrame)
-    {
-        printf("%s",options[state->SelectedItem]);
-    }
+    do{
+        if(state->Encoder.ButtonUpThisFrame)
+        {
+            // go back to main menu
+            state->SelectedItem = 0;
+            return;
+        }
+    }while(Time.Update() + state->Encoder.Update());
 }
 
 int main() {
@@ -458,11 +503,17 @@ int main() {
     printf("Initialized stdio\n");
     sleep_ms(2000);
     
-    auto lcd = init_display();
+    auto display = init_display();
 
-    lcd->SetBacklight(true);
-    lcd->SetCursor(0,1);
-    lcd->PrintString("ARFsuits.com");
+    display->SetBacklight(true);
+    display->SetCursor(0,4);
+    display->PrintString("ARFsuits.com");
+
+    display->SetCursor(2, 0);
+    display->PrintString("Z-Axis Laser Ranger");
+
+    display->SetCursor(3,4);
+    display->PrintString("[turn knob]");
 
     ProgramState state
     {
@@ -487,28 +538,18 @@ int main() {
 
         // make sure to update deltaTime
         Time.Update();
-        
         state.Encoder.Update();
 
         if(inMenu)
         {
-            if(state.Encoder.ChangedThisFrame)
+
+            switch(state.SelectedItem)
             {
-                state.Encoder.Print(lcd);
-
-                if(state.Encoder.Direction > 0)
-                {
-                    state.SelectedItem = min(state.SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
-                }
-                else if(state.Encoder.Direction < 0)
-                {
-                    state.SelectedItem = max(state.SelectedItem - 1 ,0);
-                }
+                case 2:
+                    UI_DrawInfo(&state, display);
+                default:
+                    UI_DrawMainMenu(&state, display);
             }
-
-            UI_DrawMainMenu(&state, lcd);
-
-            continue;
         }
     }
 }
