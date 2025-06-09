@@ -10,9 +10,10 @@
 #include <vector>
 
 #define VERBOSE 1
-#define ENCODER_LOGGING 1
+#define ENCODER_LOGGING 0
 #define SENSOR_LOGGING 0
-#define MOTOR_LOGGING 1
+#define MOTOR_LOGGING 0
+#define UI_LOGGING 1
 
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
@@ -21,6 +22,7 @@
 #define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
 #define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define MOTOR_INFO(format,...) if(MOTOR_LOGGING){INFO(format,__VA_ARGS__)}
+#define UI_INFO(format,...) if(UI_LOGGING){INFO(format,__VA_ARGS__)}
 
 typedef LCD_I2C* Display;
 
@@ -327,7 +329,7 @@ public:
 
     void Init()
     {
-        printf("Initializing encoder\n");
+        ENCODER_INFO("Initializing encoder\n","");
 
         gpio_init(ENCODER_CLK);
         gpio_set_dir(ENCODER_CLK, GPIO_IN);
@@ -547,7 +549,7 @@ MENU(DrawMainMenu)
         if(state->Encoder.ButtonUpThisFrame)
         {
             // since we selected a different menu exit this UI loop
-            printf("%s:%li\n",options[selectedItem],selectedItem);
+            UI_INFO("%s:%li\n",options[selectedItem],selectedItem);
             state->CurrentMenu = selectedItem;
             return;
         }
@@ -561,13 +563,14 @@ MENU(DrawInfo)
     display->PrintString("> Back");
 
     display->SetCursor(0,0);
-    display->PrintString("   Encoder Pos:");
+    display->PrintString(" Encoder Pos:");
+    state->Encoder.Print(display);
 
     // motor can't move in info screen
-    char motorPos[5];
-    sprintf(motorPos,"%5d",state->Motor.Position);
+    char motorPos[7];
+    sprintf(motorPos,"%7d",state->Motor.Position);
     display->SetCursor(1,0);
-    display->PrintString("     Motor Pos:" + std::string(motorPos));
+    display->PrintString("   Motor Pos:" + std::string(motorPos));
 
     display->SetCursor(2,0);
     bool hasSensorAtStart = state->Sensor.Connected();
@@ -638,10 +641,12 @@ MENU(DrawCalibrate)
     state->Encoder.Position = state->Motor.Position / 100;
 
     state->Motor.Enable();
+
+    int previousNumberLength = 0;
     do{
         if(state->Encoder.ChangedThisFrame)
         {
-            state->Encoder.Print(display,3,20-5);
+            
 
             int newPosition = state->Encoder.Position * 100;
             bool direction = newPosition >= state->Motor.Position;
@@ -654,12 +659,17 @@ MENU(DrawCalibrate)
                 state->Motor.Step(MOTOR_DELAY_US);
             }
             
-            int numberLength = snprintf(NULL, 0, "%d", state->Motor.Position);
+            int numberLength = snprintf(NULL, 0, "%d", state->Encoder.Position);
             int column = 10 - (numberLength/2);
-            display->SetCursor(2,0);
-            display->PrintString("                    ");
-            display->SetCursor(2, column);
-            display->PrintString(std::to_string(state->Motor.Position));
+            if(numberLength != previousNumberLength)
+            {
+                previousNumberLength = numberLength;
+                display->SetCursor(2,5);
+                display->PrintString("           ");
+            }
+
+            display->SetCursor(2,column);
+            display->PrintString(std::to_string(state->Encoder.Position));
         }
 
         if(state->Encoder.ButtonUpThisFrame)
@@ -709,7 +719,7 @@ int main() {
         Time.Update();
         state.Encoder.Update();
 
-        printf("Selecting Menu: %li\n", state.CurrentMenu);
+        UI_INFO("Selecting Menu: %li\n", state.CurrentMenu);
         
         switch(state.CurrentMenu)
         {
