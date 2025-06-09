@@ -12,6 +12,7 @@
 #define VERBOSE 1
 #define ENCODER_LOGGING 1
 #define SENSOR_LOGGING 0
+#define MOTOR_LOGGING 1
 
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
@@ -19,6 +20,7 @@
 #define INFO(format,...) if(VERBOSE){printf(format,__VA_ARGS__);} 
 #define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
 #define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
+#define MOTOR_INFO(format,...) if(MOTOR_LOGGING){INFO(format,__VA_ARGS__)}
 
 typedef LCD_I2C* Display;
 
@@ -33,7 +35,7 @@ typedef LCD_I2C* Display;
 #define DIR_PIN  11
 #define ENABLE_PIN 13
 #define MOTOR_OUT_PIN 11
-#define MOTOR_DELAY_US 50
+#define MOTOR_DELAY_US 25
 #define MOTOR_STEPS_PER_FRAME 1
 
 // encoder
@@ -265,6 +267,27 @@ public:
             Step(delay_us);
         }
         Disable();
+    }
+
+    void GotoPosition(int pos, int delay_us)
+    {
+        bool direction = pos >= Position;
+        int steps = pos - Position;
+
+        if(steps != 0)
+        {
+            MOTOR_INFO("Moving motor to position: %li (%li steps to the %s)\n", pos, steps, direction ? "right" : "left");
+
+            TurnSimple(abs(steps), direction, delay_us);
+        }
+    }
+
+    void Print(Display display, int row, int col)
+    {
+        char motorPos[5];
+        sprintf(motorPos,"%5d",Position);
+        display->SetCursor(row,col);
+        display->PrintString(motorPos);
     }
 };
 
@@ -605,10 +628,43 @@ MENU(DrawCalibrate)
 {
     display->Clear();
 
+    display->SetCursor(0,0);
+    display->PrintString("Set Lowest Height");
+
+    display->SetCursor(1,3);
+    display->PrintString("Motor Position");
+
+    // reset position to be the motors position
+    state->Encoder.Position = state->Motor.Position / 100;
+
+    state->Motor.Enable();
     do{
+        if(state->Encoder.ChangedThisFrame)
+        {
+            state->Encoder.Print(display,3,20-5);
+
+            int newPosition = state->Encoder.Position * 100;
+            bool direction = newPosition >= state->Motor.Position;
+            int steps = newPosition - state->Motor.Position;
+
+            state->Motor.SetDirection(direction);
+
+            for(int i = 0; i < abs(steps);i++)
+            {
+                state->Motor.Step(MOTOR_DELAY_US);
+            }
+            
+            int numberLength = snprintf(NULL, 0, "%d", state->Motor.Position);
+            int column = 10 - (numberLength/2);
+            display->SetCursor(2,0);
+            display->PrintString("                    ");
+            display->SetCursor(2, column);
+            display->PrintString(std::to_string(state->Motor.Position));
+        }
 
         if(state->Encoder.ButtonUpThisFrame)
         {
+            state->Motor.Disable();
             // go back to main menu
             state->CurrentMenu = -1;
             return;
