@@ -33,7 +33,7 @@ typedef LCD_I2C* Display;
 #define DIR_PIN  11
 #define ENABLE_PIN 13
 #define MOTOR_OUT_PIN 11
-#define MOTOR_DELAY_US 175
+#define MOTOR_DELAY_US 50
 #define MOTOR_STEPS_PER_FRAME 1
 
 // encoder
@@ -190,6 +190,10 @@ struct StepMotor
 public:
     int Position = 0;
     bool Direction;
+    bool LimitMotion = false;
+
+    int LowerLimit = -1000;
+    int UpperLimit = 1000;
 
     void Init()
     {
@@ -232,10 +236,21 @@ public:
     {
         if(Direction)
         {
+            if(LimitMotion && (Position + 1) > UpperLimit)
+            {
+                return;
+            }
+
             Position++;
         }else{
+            if(LimitMotion && (Position - 1) < LowerLimit)
+            {
+                return;
+            }
+
             Position--;
         }
+        
         
         gpio_put(STEP_PIN, 1);
         sleep_us(delay_us);
@@ -450,42 +465,21 @@ struct ProgramState
     StepMotor Motor;
     DistanceSensor Sensor;
 
-    int SelectedItem;
-    int PreviousSelectedItem;
+    int CurrentMenu;
 
     bool Paused;
-
-    bool ChangedMenu;
 };
 
-#define NUMBER_OF_MAIN_MENU_ITEMS 4
+#define NUMBER_OF_MAIN_MENU_ITEMS 3
 
 #define MENU(name) void UI_##name(ProgramState* state, LCD_I2C* display)
-
-MENU(UpdateSelectedItem)
-{
-    if(state->Encoder.ChangedThisFrame)
-    {
-        state->Encoder.Print(display);
-
-        if(state->Encoder.Direction > 0)
-        {
-            state->SelectedItem = min(state->SelectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
-        }
-        else if(state->Encoder.Direction < 0)
-        {
-            state->SelectedItem = max(state->SelectedItem - 1 ,0);
-        }
-    }
-}
 
 MENU(DrawMainMenu)
 {
     static const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
             "Calibrate",
             "Start",
-            "Info",
-            "Back"
+            "Info"
         };
 
     display->Clear();
@@ -496,25 +490,42 @@ MENU(DrawMainMenu)
         display->PrintString(options[i]);
     }
 
+    int selectedItem = 0;
+    int previousSelectedItem = 1;
+    
     do{
-        UI_UpdateSelectedItem(state, display);
+        if(state->Encoder.ChangedThisFrame)
+        {
+            if(state->Encoder.Direction > 0)
+            {
+                selectedItem = min(selectedItem + 1, NUMBER_OF_MAIN_MENU_ITEMS-1);
+            }
+            else if(state->Encoder.Direction < 0)
+            {
+                selectedItem = max(selectedItem - 1 ,0);
+            }
 
-        if(state->PreviousSelectedItem != state->SelectedItem)
+            display->SetCursor(0,19);
+            display->PrintString("" + selectedItem);
+        }
+
+        if(previousSelectedItem != selectedItem)
         {
             // clear arrows
-            display->SetCursor(state->PreviousSelectedItem,0);
+            display->SetCursor(previousSelectedItem, 0);
             display->PrintChar(' ');
 
-            state->PreviousSelectedItem = state->SelectedItem;
+            previousSelectedItem = selectedItem;
 
-            display->SetCursor(state->SelectedItem,0);
+            display->SetCursor(selectedItem, 0);
             display->PrintChar('>');
         }
 
         if(state->Encoder.ButtonUpThisFrame)
         {
             // since we selected a different menu exit this UI loop
-            printf("%s:%li\n",options[state->SelectedItem],state->SelectedItem);
+            printf("%s:%li\n",options[selectedItem],selectedItem);
+            state->CurrentMenu = selectedItem;
             return;
         }
     } while(Time.Update() + state->Encoder.Update());
@@ -539,7 +550,7 @@ MENU(DrawInfo)
     bool hasSensorAtStart = state->Sensor.Connected();
     display->PrintString("      Sensor: " + std::string( hasSensorAtStart ? "Y" : "N"));
 
-    int previousDistance = 0;
+    int previousDistance = -1;
     bool hadSensorLastCheck = hasSensorAtStart;
     char previousSensorString[4];
     do{
@@ -580,11 +591,26 @@ MENU(DrawInfo)
             display->SetCursor(2, 14);
             display->PrintChar(hasSensor ? 'Y' : 'N');
         }
-        
+
         if(state->Encoder.ButtonUpThisFrame)
         {
             // go back to main menu
-            state->SelectedItem = 0;
+            state->CurrentMenu = -1;
+            return;
+        }
+    }while(Time.Update() + state->Encoder.Update());
+}
+
+MENU(DrawCalibrate)
+{
+    display->Clear();
+
+    do{
+
+        if(state->Encoder.ButtonUpThisFrame)
+        {
+            // go back to main menu
+            state->CurrentMenu = -1;
             return;
         }
     }while(Time.Update() + state->Encoder.Update());
@@ -605,12 +631,9 @@ int main() {
     display->SetCursor(2, 0);
     display->PrintString("Z-Axis Laser Ranger");
 
-    display->SetCursor(3,4);
-    display->PrintString("[turn knob]");
-
     ProgramState state
     {
-        .ChangedMenu = true,
+        .CurrentMenu = -1
     };
 
     init_led_pins();
@@ -618,13 +641,11 @@ int main() {
     state.Sensor.Init();
     state.Motor.Init();
 
-    state.Motor.TurnSimple(1000, true, MOTOR_DELAY_US);
-    sleep_ms(50);
-    state.Motor.TurnSimple(1000, false, MOTOR_DELAY_US);
+    state.Motor.TurnSimple(6400, true, MOTOR_DELAY_US);
+    sleep_ms(100);
+    state.Motor.TurnSimple(6400, false, MOTOR_DELAY_US);
 
     state.Encoder.Init();
-
-    bool inMenu = true;
 
     while (true) {
 
@@ -632,16 +653,19 @@ int main() {
         Time.Update();
         state.Encoder.Update();
 
-        if(inMenu)
+        printf("Selecting Menu: %li\n", state.CurrentMenu);
+        
+        switch(state.CurrentMenu)
         {
-
-            switch(state.SelectedItem)
-            {
-                case 2:
-                    UI_DrawInfo(&state, display);
-                default:
-                    UI_DrawMainMenu(&state, display);
-            }
+            case 0:
+                UI_DrawCalibrate(&state, display);
+                break;
+            case 2:
+                UI_DrawInfo(&state, display);
+                break;
+            default: // -1
+                UI_DrawMainMenu(&state, display);
+                break;
         }
     }
 }
