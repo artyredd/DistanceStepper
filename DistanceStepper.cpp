@@ -11,12 +11,14 @@
 
 #define VERBOSE 1
 #define ENCODER_LOGGING 1
+#define SENSOR_LOGGING 0
 
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
 #define min(value,lower) ((value) > (lower) ? lower : value)
 #define INFO(format,...) if(VERBOSE){printf(format,__VA_ARGS__);} 
 #define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
+#define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
 
 typedef LCD_I2C* Display;
 
@@ -39,35 +41,6 @@ typedef LCD_I2C* Display;
 #define ENCODER_CLK 9
 #define ENCODER_DATA 17
 
-
-float min = 9999.0f;
-float max = 3.3f;
-float range = 0.0f;
-float value = 0.0f;
-volatile bool zLimitMin = false;
-volatile bool zLimitMax = false;
-
-int get_distance()
-{
-    uint16_t raw = adc_read();  // 12-bit: 0–4095
-    const float voltage = raw * 3.3f / 4095;
-
-    fprintf(stdout, "%0.3f :", voltage);
-
-    // keep track of mins and max to create a accurate meter
-    if(voltage < min)
-    {
-        min = voltage;
-        range = max - min;
-    }
-
-    int value = voltage * 1000;
-
-    fprintf(stdout, "%li :", value);
-
-    return value;
-}
-
 void init_led_pins()
 {
     printf("Initializing LED indicator\n");
@@ -75,15 +48,6 @@ void init_led_pins()
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1); // turn on LED
-}
-
-void init_sensor_pins()
-{
-    printf("Initializing sensors\n");
-
-    adc_init();
-    adc_gpio_init(IR_SENSOR_ADC_PIN);
-    adc_select_input(0);  // ADC0
 }
 
 Display init_display()
@@ -177,6 +141,47 @@ struct Timer
         Reset();
 
         return result;
+    }
+};
+
+struct DistanceSensor
+{
+public:
+    int Distance = 3300;
+
+    void Init()
+    {
+        SENSOR_INFO("Initializing sensors\n","");
+
+        adc_init();
+        adc_gpio_init(IR_SENSOR_ADC_PIN);
+        adc_select_input(0);  // ADC0
+
+        // check the voltage immediately
+        // so the caller knows at startup if the
+        // sensor is connected
+        Update();
+    }
+
+    bool Connected()
+    {
+        // 3300 means no sensor connected
+        return Distance != 3300;
+    }
+
+    int Update()
+    {
+        uint16_t raw = adc_read();  // 12-bit: 0–4095
+        
+        const float voltage = raw * 3.3f / 4095;
+
+        const int value = voltage * 1000;
+
+        SENSOR_INFO("%li :", value);
+
+        Distance = value;
+
+        return Distance;
     }
 };
 
@@ -422,15 +427,20 @@ public:
         return !gpio_get(ENCODER_SW);
     }
 
-    void Print(Display display)
+    void Print(Display display, int row, int col)
     {
-        display->SetCursor(0,20-5);
+        display->SetCursor(row,col);
         
-        printf("%5d\n",Position);
+        ENCODER_INFO("%5d\n",Position);
 
         char num[32];
         sprintf(num, "%5d", Position);
         display->PrintString(num);
+    }
+
+    void Print(Display display)
+    {
+        Print(display, 0, 20-5);
     }
 };
 
@@ -438,6 +448,7 @@ struct ProgramState
 {
     RotaryEncoder Encoder;
     StepMotor Motor;
+    DistanceSensor Sensor;
 
     int SelectedItem;
     int PreviousSelectedItem;
@@ -512,12 +523,64 @@ MENU(DrawMainMenu)
 MENU(DrawInfo)
 {
     display->Clear();
-    display->SetCursor(0,8);
-    display->PrintString("Info");
     display->SetCursor(3,0);
     display->PrintString("> Back");
 
+    display->SetCursor(0,0);
+    display->PrintString("   Encoder Pos:");
+
+    // motor can't move in info screen
+    char motorPos[5];
+    sprintf(motorPos,"%5d",state->Motor.Position);
+    display->SetCursor(1,0);
+    display->PrintString("     Motor Pos:" + std::string(motorPos));
+
+    display->SetCursor(2,0);
+    bool hasSensorAtStart = state->Sensor.Connected();
+    display->PrintString("      Sensor: " + std::string( hasSensorAtStart ? "Y" : "N"));
+
+    int previousDistance = 0;
+    bool hadSensorLastCheck = hasSensorAtStart;
+    char previousSensorString[4];
     do{
+
+        if(state->Encoder.ChangedThisFrame)
+        {
+            state->Encoder.Print(display,0,20-5);
+        }
+
+        int distance = state->Sensor.Update();
+
+        if(previousDistance != distance)
+        {
+            previousDistance = distance;
+
+            char str[4];
+            sprintf(str,"%4d", distance);
+
+            for(int i = 0; i < 4; i++)
+            {
+                char previous = previousSensorString[i];
+                char current = str[i];
+                if(previous != current)
+                {
+                    display->SetCursor(2,20-4+i);
+                    display->PrintChar(current);
+                    previousSensorString[i] = current;
+                }
+            }
+        }
+
+        bool hasSensor = state->Sensor.Connected();
+
+        if(hadSensorLastCheck != hasSensor)
+        {
+            hadSensorLastCheck = hasSensor;
+            
+            display->SetCursor(2, 14);
+            display->PrintChar(hasSensor ? 'Y' : 'N');
+        }
+        
         if(state->Encoder.ButtonUpThisFrame)
         {
             // go back to main menu
@@ -550,10 +613,9 @@ int main() {
         .ChangedMenu = true,
     };
 
-    init_sensor_pins();
-
     init_led_pins();
 
+    state.Sensor.Init();
     state.Motor.Init();
 
     state.Motor.TurnSimple(1000, true, MOTOR_DELAY_US);
