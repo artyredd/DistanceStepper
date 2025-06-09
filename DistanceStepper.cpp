@@ -9,9 +9,14 @@
 #include <functional>
 #include <vector>
 
+#define VERBOSE 1
+#define ENCODER_LOGGING 1
+
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
 #define min(value,lower) ((value) > (lower) ? lower : value)
+#define INFO(format,...) if(VERBOSE){printf(format,__VA_ARGS__);} 
+#define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
 
 typedef LCD_I2C* Display;
 
@@ -252,8 +257,12 @@ private:
     uint8_t clk = 0;
     uint8_t data = 0;
 public:
+    // ignore button presses if they happened within
+    // this length of time
+    Timer ButtonDebounceTimer = Timer(1.0/10.0);
     Timer ButtonHeldTimer = Timer(2);
 
+    int PositionLastFrame = 0;
     int Position = 0;
     int Direction = 0;
 
@@ -271,6 +280,7 @@ public:
     bool ButtonDownThisFrame = false;
     
     bool ButtonUpLastFrame = false;
+
 
     void Init()
     {
@@ -295,45 +305,65 @@ public:
     {
         ButtonHeldThisFrame = false;
         ButtonUpThisFrame = false;
+        ButtonDownThisFrame = false;
 
+        // rotation
         if(Different())
         {
-            ChangedThisFrame = true;
             Recalculate();
+            ChangedThisFrame = PositionLastFrame != Position;
+            PositionLastFrame  = Position;
         }
         else{
             ChangedThisFrame = false;
             Direction = 0;
         }
 
-        ButtonPressedThisFrame = Pressed();
+        bool pressingButton = Pressed();
+
+        ButtonDebounceTimer.Update();
+
+        if(!ButtonDebounceTimer.Check())
+        {
+            return Position;
+        }
+
+        ButtonPressedThisFrame = pressingButton;
+
+        if(!ButtonPressedThisFrame)
+        {
+            if(ButtonHeldTimer.CheckAndReset())
+            {
+                ENCODER_INFO("Button Held\n","");
+                ButtonHeldThisFrame = true;
+
+                // debounce cooldown
+                ButtonDebounceTimer.Reset();
+            }
+            else if(ButtonPreviouslyPressed)
+            {
+                ENCODER_INFO("Button Up\n","");
+                ButtonUpThisFrame = true;
+                ButtonPreviouslyPressed = false;
+
+                // debounce cooldown
+                ButtonDebounceTimer.Reset();
+            }
+        }
 
         if(ButtonPressedThisFrame)
         {
+            // keep track of how long it's pressed
             ButtonHeldTimer.Update();
 
             if(!ButtonPreviouslyPressed)
             {
+                ENCODER_INFO("Button Down\n","");
                 ButtonPreviouslyPressed = true;
                 ButtonDownThisFrame = true;
-            }
-        }
-        else {
-            if(ButtonHeldTimer.CheckAndReset())
-            {
-                ButtonHeldThisFrame = true;
-            }
-            else if(ButtonPreviouslyPressed)
-            {
-                // debounce button up.
-                // Human paws are slow and sometimes the up fires twice or ten times
-                if(!ButtonUpLastFrame)
-                {
-                    ButtonUpLastFrame = false;
-                    ButtonUpThisFrame = true;
-                }
 
-                ButtonPreviouslyPressed = false;
+                // debounce cooldown
+                ButtonDebounceTimer.Reset();
             }
         }
 
