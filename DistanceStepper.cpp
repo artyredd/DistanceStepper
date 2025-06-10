@@ -198,8 +198,8 @@ public:
     bool Direction;
     bool LimitMotion = false;
 
-    int LowerLimit = -1000;
-    int UpperLimit = 1000;
+    int LowerLimit = 0;
+    int UpperLimit = 0;
 
     void Init()
     {
@@ -314,7 +314,8 @@ public:
     // ignore button presses if they happened within
     // this length of time
     Timer ButtonDebounceTimer = Timer(2.0/10.0);
-    Timer ButtonHeldTimer = Timer(2);
+    Timer ButtonHeldTimer = Timer(1);
+    float LongHoldLength = 2.0f;
 
     int PositionLastFrame = 0;
     int Position = 0;
@@ -333,6 +334,7 @@ public:
     bool ButtonHeldThisFrame = false;
     // First frame the button is pressed
     bool ButtonDownThisFrame = false;
+    bool ButtonLongHeldThisFrame = false;
     
     bool ButtonUpLastFrame = false;
     bool ButtonHeldLastFrame = false;
@@ -361,6 +363,7 @@ public:
 
     int Update()
     {
+        ButtonLongHeldThisFrame = false;
         ButtonHeldThisFrame = false;
         ButtonUpThisFrame = false;
         ButtonDownThisFrame = false;
@@ -393,8 +396,14 @@ public:
 
         if(!ButtonPressedThisFrame)
         {
-            if(ButtonHeldTimer.CheckAndReset())
+            if(ButtonHeldTimer.Check())
             {
+                if(ButtonHeldTimer.Value >= LongHoldLength)
+                {
+                    ENCODER_INFO("Button Long Held\n","");
+                    ButtonLongHeldThisFrame = true;
+                }
+
                 ENCODER_INFO("Button Held\n","");
                 ButtonHeldThisFrame = true;
                 ButtonHeldLastFrame = true;
@@ -419,6 +428,8 @@ public:
                 
                 PreviouslyHeldButton = false;
             }
+
+            ButtonHeldTimer.Reset();
         }
 
         if(ButtonPressedThisFrame)
@@ -524,13 +535,14 @@ struct ProgramState
     bool Paused;
 
     int CurrentCalibrationStep;
+    int CurrentMainStep;
 };
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 3
 
 #define MENU(name) void UI_##name(ProgramState* state, LCD_I2C* display)
 
-MENU(DrawMainMenu)
+MENU(Main)
 {
     static const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
             "Calibrate",
@@ -587,7 +599,7 @@ MENU(DrawMainMenu)
     } while(Time.Update() + state->Encoder.Update());
 }
 
-MENU(DrawInfo)
+MENU(Info)
 {
     display->Clear();
     display->SetCursor(3,0);
@@ -595,7 +607,7 @@ MENU(DrawInfo)
 
     // motor can't move in info screen
     display->SetCursor(0,0);
-    display->PrintString("Motor: " + state->Motor.PositionToString(state->Motor.Position));
+    display->PrintString("Motor: " + state->Motor.PositionToString(state->Motor.Position) + " " + state->Motor.PositionToString(state->Motor.LowerLimit));
     display->SetCursor(1,20-6);
     display->PrintString(state->Motor.PositionToString(state->Motor.UpperLimit));
 
@@ -658,7 +670,27 @@ MENU(DrawInfo)
     }while(Time.Update() + state->Encoder.Update());
 }
 
-MENU(DrawCalibrate)
+MENU(SetHeight)
+{
+    display->Clear();
+
+    do{
+        
+        if(state->Encoder.ButtonUpThisFrame)
+        {
+            // go back to main menu
+            state->CurrentMenu = -1;
+            return;
+        }
+    }while(Time.Update() + state->Encoder.Update());
+}
+
+MENU(Range)
+{
+
+}
+
+MENU(Calibrate)
 {
     if(state->CurrentCalibrationStep > 1)
     {
@@ -667,12 +699,15 @@ MENU(DrawCalibrate)
 
     display->Clear();
 
-    display->SetCursor(0,0);
+    display->SetCursor(0,2);
 
     display->PrintString(state->CurrentCalibrationStep == 0 ? "Set Lower Height" : "Set Upper Height");
 
     display->SetCursor(1,3);
     display->PrintString("Motor Position");
+
+    display->SetCursor(3,0);
+    display->PrintString("Previously: " + state->Motor.PositionToString(state->CurrentCalibrationStep == 0 ? state->Motor.LowerLimit / 100 : state->Motor.UpperLimit / 100));
 
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
@@ -716,7 +751,7 @@ MENU(DrawCalibrate)
         {   
             fastMode = !fastMode;
             state->Encoder.StepScale = fastMode ? 5 : 1;
-            display->SetCursor(3,20-4);
+            display->SetCursor(2,20-4);
             display->PrintString(fastMode ? "fast" : "    ");
         }
 
@@ -796,13 +831,16 @@ int main() {
         switch(state.CurrentMenu)
         {
             case 0:
-                UI_DrawCalibrate(&state, display);
+                UI_Calibrate(&state, display);
+                break;
+            case 1:
+                UI_SetHeight(&state, display);
                 break;
             case 2:
-                UI_DrawInfo(&state, display);
+                UI_Info(&state, display);
                 break;
             default: // -1
-                UI_DrawMainMenu(&state, display);
+                UI_Main(&state, display);
                 break;
         }
     }
