@@ -10,7 +10,7 @@
 #include <vector>
 
 #define VERBOSE 1
-#define ENCODER_LOGGING 0
+#define ENCODER_LOGGING 1
 #define SENSOR_LOGGING 0
 #define MOTOR_LOGGING 0
 #define UI_LOGGING 1
@@ -19,7 +19,9 @@
 #define max(value,upper) ((value) < (upper) ? upper : value)
 #define min(value,lower) ((value) > (lower) ? lower : value)
 #define INFO(format,...) if(VERBOSE){printf(format,__VA_ARGS__);} 
+#define INFO_IF(condition,format,...) if(VERBOSE && (condition)){printf(format,__VA_ARGS__);} 
 #define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
+#define ENCODER_INFO_IF(condition,format,...) if(ENCODER_LOGGING && (condition)){INFO(format,__VA_ARGS__)}
 #define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define MOTOR_INFO(format,...) if(MOTOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define UI_INFO(format,...) if(UI_LOGGING){INFO(format,__VA_ARGS__)}
@@ -304,12 +306,13 @@ private:
 public:
     // ignore button presses if they happened within
     // this length of time
-    Timer ButtonDebounceTimer = Timer(1.0/10.0);
+    Timer ButtonDebounceTimer = Timer(2.0/10.0);
     Timer ButtonHeldTimer = Timer(2);
 
     int PositionLastFrame = 0;
     int Position = 0;
     int Direction = 0;
+    int StepScale = 1;
 
     bool ChangedThisFrame = false;
 
@@ -325,6 +328,9 @@ public:
     bool ButtonDownThisFrame = false;
     
     bool ButtonUpLastFrame = false;
+    bool ButtonHeldLastFrame = false;
+    bool PreviouslyHeldButton = false;
+
 
 
     void Init()
@@ -357,6 +363,9 @@ public:
         {
             Recalculate();
             ChangedThisFrame = PositionLastFrame != Position;
+            
+            ENCODER_INFO_IF(Position != PositionLastFrame, "pos: %li\n", Position);
+
             PositionLastFrame  = Position;
         }
         else{
@@ -381,18 +390,27 @@ public:
             {
                 ENCODER_INFO("Button Held\n","");
                 ButtonHeldThisFrame = true;
+                ButtonHeldLastFrame = true;
+                PreviouslyHeldButton = true;
+                ButtonPreviouslyPressed = false;
 
                 // debounce cooldown
                 ButtonDebounceTimer.Reset();
             }
             else if(ButtonPreviouslyPressed)
             {
-                ENCODER_INFO("Button Up\n","");
-                ButtonUpThisFrame = true;
-                ButtonPreviouslyPressed = false;
+                // ignore first up since held
+                if(!PreviouslyHeldButton)
+                {
+                    ENCODER_INFO("Button Up\n","");
+                    ButtonUpThisFrame = true;
+                    ButtonPreviouslyPressed = false;
 
-                // debounce cooldown
-                ButtonDebounceTimer.Reset();
+                    // debounce cooldown
+                    ButtonDebounceTimer.Reset();
+                }
+                
+                PreviouslyHeldButton = false;
             }
         }
 
@@ -406,11 +424,20 @@ public:
                 ENCODER_INFO("Button Down\n","");
                 ButtonPreviouslyPressed = true;
                 ButtonDownThisFrame = true;
+                PreviouslyHeldButton = false;
 
                 // debounce cooldown
                 ButtonDebounceTimer.Reset();
             }
         }
+
+        ENCODER_INFO_IF(
+            ButtonHeldThisFrame || ButtonUpThisFrame || ButtonDownThisFrame,
+            "Down: %s, Up: %s, Held: %s\n",
+            ButtonDownThisFrame ? "true" : "false",
+            ButtonUpThisFrame ? "true" : "false",
+            ButtonHeldThisFrame ? "true" : "false"
+        );
 
         return Position;
     }
@@ -424,7 +451,7 @@ public:
         {
             if(Direction != -1)
             {
-                Position++;  // CW
+                Position += StepScale;  // CW
                 LastState = NewState;
                 Direction = 1;
             }
@@ -441,7 +468,7 @@ public:
         {
             if(Direction != 1)
             {
-                Position--;  // CCW
+                Position -= StepScale;  // CCW
                 LastState = NewState;
                 Direction = -1;
             }
@@ -493,6 +520,8 @@ struct ProgramState
     int CurrentMenu;
 
     bool Paused;
+
+    int CurrentCalibrationStep;
 };
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 3
@@ -629,10 +658,16 @@ MENU(DrawInfo)
 
 MENU(DrawCalibrate)
 {
+    if(state->CurrentCalibrationStep > 1)
+    {
+        state->CurrentCalibrationStep = 0;
+    }
+
     display->Clear();
 
     display->SetCursor(0,0);
-    display->PrintString("Set Lowest Height");
+
+    display->PrintString(state->CurrentCalibrationStep == 0 ? "Set Lower Height" : "Set Upper Height");
 
     display->SetCursor(1,3);
     display->PrintString("Motor Position");
@@ -640,14 +675,17 @@ MENU(DrawCalibrate)
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
 
+    // turn off the limits of the motor so it can extend past its motion limits
+    state->Motor.LimitMotion = false;
     state->Motor.Enable();
 
     int previousNumberLength = 0;
+    
+    bool fastMode = false;
+
     do{
         if(state->Encoder.ChangedThisFrame)
         {
-            
-
             int newPosition = state->Encoder.Position * 100;
             bool direction = newPosition >= state->Motor.Position;
             int steps = newPosition - state->Motor.Position;
@@ -672,11 +710,43 @@ MENU(DrawCalibrate)
             display->PrintString(std::to_string(state->Encoder.Position));
         }
 
+        if(state->Encoder.ButtonHeldThisFrame)
+        {   
+            fastMode = !fastMode;
+            state->Encoder.StepScale = fastMode ? 5 : 1;
+            display->SetCursor(3,20-4);
+            display->PrintString(fastMode ? "fast" : "    ");
+        }
+
         if(state->Encoder.ButtonUpThisFrame)
         {
+            if(state->CurrentCalibrationStep == 0)
+            {
+                state->Motor.LowerLimit = state->Motor.Position;
+            }
+            if(state->CurrentCalibrationStep == 1)
+            {
+                state->Motor.UpperLimit = state->Motor.Position;
+            }
+            
+            state->Encoder.StepScale = 1;
             state->Motor.Disable();
+            
+            // resume forcing the motor to stop when exceeding the limits
+            state->Motor.LimitMotion = true;
+            
             // go back to main menu
-            state->CurrentMenu = -1;
+            if(state->CurrentCalibrationStep == 1)
+            {
+                state->CurrentCalibrationStep = 0;
+                state->CurrentMenu = -1;
+            }
+            else{
+                state->CurrentCalibrationStep++;
+                // return to this menu
+                state->CurrentMenu = 0;
+            }
+            
             return;
         }
     }while(Time.Update() + state->Encoder.Update());
