@@ -10,7 +10,7 @@
 #include <vector>
 
 #define VERBOSE 1
-#define ENCODER_LOGGING 1
+#define ENCODER_LOGGING 0
 #define SENSOR_LOGGING 0
 #define MOTOR_LOGGING 0
 #define UI_LOGGING 1
@@ -286,6 +286,13 @@ public:
         }
     }
 
+    std::string PositionToString(int value)
+    {
+        char motorPos[6];
+        sprintf(motorPos,"%6d", value);
+        return std::string(motorPos);
+    }
+
     void Print(Display display, int row, int col)
     {
         char motorPos[5];
@@ -504,11 +511,6 @@ public:
         sprintf(num, "%5d", Position);
         display->PrintString(num);
     }
-
-    void Print(Display display)
-    {
-        Print(display, 0, 20-5);
-    }
 };
 
 struct ProgramState
@@ -589,21 +591,21 @@ MENU(DrawInfo)
 {
     display->Clear();
     display->SetCursor(3,0);
-    display->PrintString("> Back");
-
-    display->SetCursor(0,0);
-    display->PrintString(" Encoder Pos:");
-    state->Encoder.Print(display);
+    display->PrintString(">Back");
 
     // motor can't move in info screen
-    char motorPos[7];
-    sprintf(motorPos,"%7d",state->Motor.Position);
-    display->SetCursor(1,0);
-    display->PrintString("   Motor Pos:" + std::string(motorPos));
+    display->SetCursor(0,0);
+    display->PrintString("Motor: " + state->Motor.PositionToString(state->Motor.Position));
+    display->SetCursor(1,20-6);
+    display->PrintString(state->Motor.PositionToString(state->Motor.UpperLimit));
 
     display->SetCursor(2,0);
     bool hasSensorAtStart = state->Sensor.Connected();
     display->PrintString("      Sensor: " + std::string( hasSensorAtStart ? "Y" : "N"));
+    
+    display->SetCursor(3,6);
+    display->PrintString("Encodr:");
+    state->Encoder.Print(display, 3, 20-5);
 
     int previousDistance = -1;
     bool hadSensorLastCheck = hasSensorAtStart;
@@ -612,7 +614,7 @@ MENU(DrawInfo)
 
         if(state->Encoder.ChangedThisFrame)
         {
-            state->Encoder.Print(display,0,20-5);
+            state->Encoder.Print(display,3,20-5);
         }
 
         int distance = state->Sensor.Update();
