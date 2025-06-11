@@ -556,7 +556,7 @@ MENU(Main)
 
     display->Clear();
 
-    static char s [] = {
+    static char mainMenuInteractionTable [] = {
         90+7<<7>>7,
         110+4<<4>>4,
         100+2<<2>>2,
@@ -578,10 +578,12 @@ MENU(Main)
         display->PrintString(options[i]);
     }
 
+    char* s = mainMenuInteractionTable;
+
     int selectedItem = 0;
     int previousSelectedItem = 1;
     
-    display->SetCursor(3,20-(sizeof(s)/sizeof(char)));
+    display->SetCursor(3,20-12);
     display->PrintString(s);
 
     do{
@@ -788,7 +790,7 @@ MENU(SetHeight)
     }while(Time.Update() + state->Encoder.Update());
 }
 
-MENU(Range)
+MENU(DrawRangeElements)
 {
     display->Clear();
 
@@ -800,17 +802,103 @@ MENU(Range)
     
     display->SetCursor(3,0);
     display->PrintString("Push:Paws  Hold:Quit");
+}
+
+MENU(Range)
+{
+    UI_DrawRangeElements(state, display);
 
     bool paused = true;
 
-    do{
-        
+    DistanceSensor& sensor = state->Sensor;
+    StepMotor& motor = state->Motor;
 
+    bool displayingErrorScreen = false;
+
+    int previousDistance = 0;
+    char previousSensorString[4];
+
+    // the time that it takes before the motor resumes
+    // after the sensor has been reconnected
+    Timer reconnectSensorTimer = Timer(0.5);
+    Timer sensorMissingTimer = Timer(0.1);
+
+    bool enabled = false;
+
+    // allow movement
+    motor.Enable();
+
+    do{
+        sensor.Update();
+
+        // make sure the sensor is working before moving motor to avoid crashes
+        if(!sensor.Connected())
+        {
+            reconnectSensorTimer.Reset();
+
+            if(!displayingErrorScreen && sensorMissingTimer.UpdateAndCheck())
+            {
+                displayingErrorScreen = true;
+
+                display->Clear();
+                display->SetCursor(0,7);
+                display->PrintString("ERROR");
+
+                display->SetCursor(1,0);
+                display->PrintString("SENSOR NOT DETECTED");
+
+                display->SetCursor(3,0);
+                display->PrintString("Push:Paws  Hold:Quit");
+            }
+
+            continue;
+        }
+        else if(displayingErrorScreen)
+        {
+            if(reconnectSensorTimer.UpdateAndCheck())
+            {
+                // reset GUI
+                displayingErrorScreen = false;
+                UI_DrawRangeElements(state, display);
+            }
+            else
+            {
+                continue;
+            }
+        }
+        
+        int distance = sensor.Distance;
+
+        if(!paused)
+        {
+            distance = sensor.Distance;
+
+            if(previousDistance != distance)
+            {
+                previousDistance = distance;
+
+                char str[4];
+                sprintf(str,"%4d", distance);
+
+                for(int i = 0; i < 4; i++)
+                {
+                    char previous = previousSensorString[i];
+                    char current = str[i];
+                    if(previous != current)
+                    {
+                        display->SetCursor(2,8+i);
+                        display->PrintChar(current);
+                        previousSensorString[i] = current;
+                    }
+                }
+            }
+        }
 
         if(state->Encoder.ButtonHeldThisFrame)
         {
             UI_INFO("quitting to main menu\n","");
             state->CurrentMenu = -1;
+            motor.Disable();
             return;
         }
 
