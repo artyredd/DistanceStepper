@@ -8,6 +8,8 @@
 #include <string>
 #include <functional>
 #include <vector>
+#include "hardware/flash.h"
+#include "hardware/sync.h"
 
 #define VERBOSE 1
 #define ENCODER_LOGGING 0
@@ -536,6 +538,8 @@ struct ProgramState
 
     int CurrentCalibrationStep;
     int CurrentMainStep;
+
+    int DesiredDistance;
 };
 
 #define NUMBER_OF_MAIN_MENU_ITEMS 3
@@ -551,6 +555,22 @@ MENU(Main)
         };
 
     display->Clear();
+
+    static char s [] = {
+        90+7<<7>>7,
+        110+4<<4>>4,
+        100+2<<2>>2,
+        110+5<<5>>5,
+        110+7<<7>>7,
+        100+5<<5>>5,
+        110+6<<6>>6,
+        110+5<<5>>5,
+        40+6<<6>>6,
+        90+9<<9>>9,
+        110+1<<1>>1,
+        100+9<<9>>9
+    };
+
     for(int i = 0; i < NUMBER_OF_MAIN_MENU_ITEMS; i++)
     {
         display->SetCursor(i,1);
@@ -561,6 +581,9 @@ MENU(Main)
     int selectedItem = 0;
     int previousSelectedItem = 1;
     
+    display->SetCursor(3,20-(sizeof(s)/sizeof(char)));
+    display->PrintString(s);
+
     do{
         if(state->Encoder.ChangedThisFrame)
         {
@@ -674,12 +697,92 @@ MENU(SetHeight)
 {
     display->Clear();
 
+    display->SetCursor(0,5);
+
+    display->PrintString("Set Height");
+
+    display->SetCursor(1,6);
+    display->PrintString("Distance");
+
+    // reset position to be the motors position
+    state->Encoder.Position = state->Motor.Position / 100;
+
+    // turn off the limits of the motor so it can extend past its motion limits
+    state->Motor.Enable();
+
+    bool fastMode = false;
+
+    int previousDistance = 0;
+    char previousSensorString[4];
+    bool hadSensorLastCheck = state->Sensor.Connected();
+
     do{
-        
+        // print sensor status
+        int distance = state->Sensor.Update();
+
+        if(previousDistance != distance)
+        {
+            previousDistance = distance;
+
+            char str[4];
+            sprintf(str,"%4d", distance);
+
+            for(int i = 0; i < 4; i++)
+            {
+                char previous = previousSensorString[i];
+                char current = str[i];
+                if(previous != current)
+                {
+                    display->SetCursor(2,8+i);
+                    display->PrintChar(current);
+                    previousSensorString[i] = current;
+                }
+            }
+        }
+
+        bool hasSensor = state->Sensor.Connected();
+
+        if(hadSensorLastCheck != hasSensor)
+        {
+            hadSensorLastCheck = hasSensor;
+            
+            display->SetCursor(2, 14);
+            display->PrintChar(hasSensor ? 'Y' : 'N');
+        }
+            
+        if(state->Encoder.ChangedThisFrame)
+        {
+            int newPosition = state->Encoder.Position * 100;
+            bool direction = newPosition >= state->Motor.Position;
+            int steps = newPosition - state->Motor.Position;
+
+            state->Motor.SetDirection(direction);
+
+            for(int i = 0; i < abs(steps);i++)
+            {
+                state->Motor.Step(MOTOR_DELAY_US);
+            }
+        }
+
+        if(state->Encoder.ButtonHeldThisFrame)
+        {   
+            fastMode = !fastMode;
+            state->Encoder.StepScale = fastMode ? 5 : 1;
+            display->SetCursor(3,20-4);
+            display->PrintString(fastMode ? "fast" : "    ");
+        }
+
         if(state->Encoder.ButtonUpThisFrame)
         {
-            // go back to main menu
-            state->CurrentMenu = -1;
+            state->Encoder.StepScale = 1;
+            state->Motor.Disable();
+
+            UI_INFO("Set desired distance: %4d\n", previousDistance);
+            state->DesiredDistance = previousDistance;
+
+            // go to ranging menu to start ranging
+            state->CurrentMenu = 40;
+            
             return;
         }
     }while(Time.Update() + state->Encoder.Update());
@@ -687,7 +790,39 @@ MENU(SetHeight)
 
 MENU(Range)
 {
+    display->Clear();
 
+    display->SetCursor(0,7);
+    display->PrintString("PAUSED");
+
+    display->SetCursor(1,3);
+    display->PrintString("Distance: " + std::to_string(state->DesiredDistance));
+    
+    display->SetCursor(3,0);
+    display->PrintString("Push:Paws  Hold:Quit");
+
+    bool paused = true;
+
+    do{
+        
+
+
+        if(state->Encoder.ButtonHeldThisFrame)
+        {
+            UI_INFO("quitting to main menu\n","");
+            state->CurrentMenu = -1;
+            return;
+        }
+
+        if(state->Encoder.ButtonUpThisFrame)
+        {
+            paused = !paused;
+            UI_INFO("%s\n",paused ? "paused" : "unpaused");
+
+            display->SetCursor(0,7);
+            display->PrintString(paused ? "PAUSED" : "ACTIVE");
+        }
+    }while(Time.Update() + state->Encoder.Update());
 }
 
 MENU(Calibrate)
@@ -838,6 +973,9 @@ int main() {
                 break;
             case 2:
                 UI_Info(&state, display);
+                break;
+            case 40:
+                UI_Range(&state, display);
                 break;
             default: // -1
                 UI_Main(&state, display);
