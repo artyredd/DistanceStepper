@@ -10,6 +10,7 @@
 #include <vector>
 #include "hardware/flash.h"
 #include "hardware/sync.h"
+#include "pico/multicore.h"
 
 #define VERBOSE 1
 #define ENCODER_LOGGING 0
@@ -27,6 +28,10 @@
 #define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define MOTOR_INFO(format,...) if(MOTOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define UI_INFO(format,...) if(UI_LOGGING){INFO(format,__VA_ARGS__)}
+
+#define assert_soft(condition,format,...) if(!(condition)){INFO(format,__VA_ARGS__); }
+#define wait_while(condition) while(condition){sleep_us(1);}
+
 
 typedef LCD_I2C* Display;
 
@@ -195,13 +200,22 @@ public:
 
 struct StepMotor
 {
+private:
+    volatile bool Enabled = false;
+    volatile bool PreviousDirection;
+    volatile int DesiredPosition = 0;
 public:
-    int Position = 0;
-    bool Direction;
-    bool LimitMotion = false;
+    volatile int Position = 0;
 
-    int LowerLimit = 0;
-    int UpperLimit = 0;
+    volatile bool Synchronous = false;
+
+    volatile bool Direction;
+    volatile bool LimitMotion = false;
+
+    volatile int LowerLimit = 0;
+    volatile int UpperLimit = 0;
+
+    volatile int MotorSpeed_us = MOTOR_DELAY_US;
 
     void Init()
     {
@@ -226,22 +240,40 @@ public:
 
     void Enable()
     {
-        gpio_put(ENABLE_PIN, 0);
+        if(!Enabled)
+        {
+            Enabled = true;
+            gpio_put(ENABLE_PIN, 0);
+        }
     }
 
     void Disable()
     {
-        gpio_put(ENABLE_PIN, 1);
+        if(Enabled)
+        {
+            Enabled = false;
+            gpio_put(ENABLE_PIN, 1);
+        }
     }
 
     void SetDirection(bool direction)
     {
-        gpio_put(DIR_PIN, direction);
+        if(Synchronous)
+        {
+            gpio_put(DIR_PIN, Direction);
+            PreviousDirection = direction;
+        }
         Direction = direction;
     }
 
     void Step(int delay_us)
     {
+        if(Direction != PreviousDirection)
+        {
+            gpio_put(DIR_PIN, Direction);
+            PreviousDirection = Direction;
+        }
+
         if(Direction)
         {
             if(LimitMotion && (Position + 1) > UpperLimit)
@@ -286,6 +318,31 @@ public:
 
             TurnSimple(abs(steps), direction, delay_us);
         }
+    }
+
+    void SetPositionAsync(int position)
+    {
+        assert_soft(!Synchronous, "attempted to set the async position of the motor while it's in a synchronous state.","");
+
+        DesiredPosition = position;
+        Direction = DesiredPosition > Position;
+    }
+
+    // BLOCKING;
+    // This method blocks the current thread and monitors
+    // for commands for the motor and moves the motor appropriately
+    void MonitorForCommands()
+    {
+        do
+        {
+            if(Enabled && !Synchronous)
+            {
+                if(Position != DesiredPosition)
+                {
+                    Step(MotorSpeed_us);
+                }
+            }
+        } while (1);
     }
 
     std::string PositionToString(int value)
@@ -1012,31 +1069,57 @@ MENU(Calibrate)
     }while(Time.Update() + state->Encoder.Update());
 }
 
+ProgramState* Global_State;
+
+// responsible for driving the motor asynchronously
+void main_core_1()
+{
+    INFO("Starting Second Core","");
+
+    Global_State->Motor.MonitorForCommands();
+}
+
 int main() {
     stdio_init_all();
 
     printf("Initialized stdio\n");
     sleep_ms(2000);
+
     
-    auto display = init_display();
-
-    display->SetBacklight(true);
-    display->SetCursor(0,4);
-    display->PrintString("ARFsuits.com");
-
-    display->SetCursor(2, 0);
-    display->PrintString("Z-Axis Laser Ranger");
-
     ProgramState state
     {
         .CurrentMenu = -1
     };
-
+    
+    Global_State = &state;
+    
+    multicore_launch_core1(main_core_1);
+    
+    auto display = init_display();
+    
+    display->SetBacklight(true);
+    display->SetCursor(0,4);
+    display->PrintString("ARFsuits.com");
+    
+    display->SetCursor(2, 0);
+    display->PrintString("Z-Axis Laser Ranger");
+    
     init_led_pins();
 
     state.Sensor.Init();
     state.Motor.Init();
 
+    state.Motor.Enable();
+    state.Motor.Synchronous = false;
+    state.Motor.SetPositionAsync(6400);
+    wait_while(state.Motor.Position != 6400);
+    state.Motor.SetPositionAsync(0);
+    wait_while(state.Motor.Position != 0);
+    state.Motor.Disable();
+
+    sleep_ms(1000);
+
+    state.Motor.Synchronous = true;
     state.Motor.TurnSimple(6400, true, MOTOR_DELAY_US);
     sleep_ms(100);
     state.Motor.TurnSimple(6400, false, MOTOR_DELAY_US);

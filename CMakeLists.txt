@@ -72,6 +72,7 @@ target_link_libraries(DistanceStepper
         hardware_timer
         hardware_watchdog
         hardware_clocks
+        pico_multicore
         )
 
 pico_add_extra_outputs(DistanceStepper)
