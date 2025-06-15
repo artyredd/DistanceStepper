@@ -30,7 +30,7 @@
 #define UI_INFO(format,...) if(UI_LOGGING){INFO(format,__VA_ARGS__)}
 
 #define assert_soft(condition,format,...) if(!(condition)){INFO(format,__VA_ARGS__); }
-#define wait_while(condition) while(condition){sleep_us(1);}
+#define wait_while(condition) while(condition){tight_loop_contents();}
 #define sign(num) ((num) < 0 ? -1 : 1);
 
 
@@ -47,7 +47,7 @@ typedef LCD_I2C* Display;
 #define DIR_PIN  11
 #define ENABLE_PIN 13
 #define MOTOR_OUT_PIN 11
-#define MOTOR_DELAY_US 25
+#define MOTOR_DELAY_US 15
 #define MOTOR_STEPS_PER_FRAME 1
 
 // encoder
@@ -1011,14 +1011,17 @@ MENU(Quit)
     display->CreateCustomChar(BLACK_BLOCK_LOC, BLACK_BLOCK);
     
     const int startPosition = state->Motor.Position;
-    const int endPosition = state->Motor.UpperLimit;
 
+    const int endPosition = state->Motor.UpperLimit;
+    
+    UI_INFO("Sending motor to upper limit: %li\n",endPosition);
+    
     state->Motor.Synchronous = false;
     state->Motor.Enable();
     state->Motor.SetPositionAsync(endPosition);
 
     const int segments = 20;
-    const int total = endPosition - startPosition;
+    const int total = abs(endPosition - startPosition);
 
 
     int previousChar = 0;
@@ -1026,7 +1029,7 @@ MENU(Quit)
     {
         float value = state->Motor.Position - startPosition;
 
-        float percentage = value / (float)endPosition;
+        float percentage = value / total;
 
         int count = (int)(percentage * segments);
 
@@ -1069,8 +1072,13 @@ MENU(Calibrate)
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
 
+    const int baseStepScale = 5;
+    const int fastStepScale = 10;
+    state->Encoder.StepScale = baseStepScale;
+
     // turn off the limits of the motor so it can extend past its motion limits
     state->Motor.LimitMotion = false;
+    state->Motor.Synchronous = false;
     state->Motor.Enable();
 
     int previousNumberLength = 0;
@@ -1081,15 +1089,8 @@ MENU(Calibrate)
         if(state->Encoder.ChangedThisFrame)
         {
             int newPosition = state->Encoder.Position * 100;
-            bool direction = newPosition >= state->Motor.Position;
-            int steps = newPosition - state->Motor.Position;
-
-            state->Motor.SetDirection(direction);
-
-            for(int i = 0; i < abs(steps);i++)
-            {
-                state->Motor.Step(MOTOR_DELAY_US);
-            }
+            
+            state->Motor.SetPositionAsync(newPosition);
             
             int numberLength = snprintf(NULL, 0, "%d", state->Encoder.Position);
             int column = 10 - (numberLength/2);
@@ -1107,7 +1108,7 @@ MENU(Calibrate)
         if(state->Encoder.ButtonHeldThisFrame)
         {   
             fastMode = !fastMode;
-            state->Encoder.StepScale = fastMode ? 5 : 1;
+            state->Encoder.StepScale = fastMode ? fastStepScale : baseStepScale;
             display->SetCursor(2,20-4);
             display->PrintString(fastMode ? "fast" : "    ");
         }
@@ -1204,6 +1205,9 @@ int main() {
     state.Motor.TurnSimple(6400, false, MOTOR_DELAY_US);
 
     state.Encoder.Init();
+
+    // test quit
+    state.Motor.UpperLimit = 64000;
 
     while (true) {
 
