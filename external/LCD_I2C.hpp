@@ -15,6 +15,9 @@
 #include <string_view>
 #include <cstdint>
 #include <array>
+#include "pico/stdlib.h"
+#include "pico/stdio.h"
+#include <stdio.h>
 
 class LCD_I2C final
 {
@@ -262,6 +265,21 @@ class LCD_I2C final
      * @param str The string to be printed
      */
     void PrintString(std::string_view str) const noexcept;
+
+   void PrintCentered(std::string_view str, int row)
+   {
+      int size = str.size();
+      if(size > 20)
+      {
+         printf("WARNING: attempted to draw centered string wider than the screen, letters will be drawn on the next row\n");
+      }
+
+      int centered = 10 - (str.size() >> 1);
+
+      SetCursor(row, centered);
+
+      PrintString(str);
+   }
 
     /**
      * Prints the custom character on the display at the current cursor

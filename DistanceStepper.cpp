@@ -600,7 +600,7 @@ struct ProgramState
     int DesiredDistance;
 };
 
-#define NUMBER_OF_MAIN_MENU_ITEMS 3
+#define NUMBER_OF_MAIN_MENU_ITEMS 4
 
 #define MENU(name) void UI_##name(ProgramState* state, LCD_I2C* display)
 
@@ -609,7 +609,8 @@ MENU(Main)
     static const char* options[NUMBER_OF_MAIN_MENU_ITEMS] = {
             "Calibrate",
             "Start",
-            "Info"
+            "Info",
+            "Quit"
         };
 
     display->Clear();
@@ -989,6 +990,63 @@ MENU(Range)
     }while(Time.Update() + state->Encoder.Update());
 }
 
+MENU(Quit)
+{
+    display->Clear();
+    display->PrintCentered("Quitting",0);
+
+    constexpr LCD_I2C::array BLACK_BLOCK = {
+        0b11111,  // Row 0
+        0b11111,  // Row 1
+        0b11111,  // Row 2
+        0b11111,  // Row 3
+        0b11111,  // Row 4
+        0b11111,  // Row 5
+        0b11111,  // Row 6
+        0b11111   // Row 7
+    };
+
+    constexpr int BLACK_BLOCK_LOC = 0;
+
+    display->CreateCustomChar(BLACK_BLOCK_LOC, BLACK_BLOCK);
+    
+    const int startPosition = state->Motor.Position;
+    const int endPosition = state->Motor.UpperLimit;
+
+    state->Motor.Synchronous = false;
+    state->Motor.Enable();
+    state->Motor.SetPositionAsync(endPosition);
+
+    const int segments = 20;
+    const int total = endPosition - startPosition;
+
+
+    int previousChar = 0;
+    while(state->Motor.Position != state->Motor.UpperLimit)
+    {
+        float value = state->Motor.Position - startPosition;
+
+        float percentage = value / (float)endPosition;
+
+        int count = (int)(percentage * segments);
+
+        for(int i = previousChar; i < count; i++)
+        {
+            display->SetCursor(1, i);  // Row 1, Column 0
+            display->PrintCustomChar(BLACK_BLOCK_LOC);
+        }
+    }
+
+    state->Motor.Disable();
+
+    display->Clear();
+    display->PrintCentered("You can now",1);
+    display->PrintCentered("unplug device",2);
+    display->BacklightOff();
+
+    while(1) { tight_loop_contents(); }
+}
+
 MENU(Calibrate)
 {
     if(state->CurrentCalibrationStep > 1)
@@ -1166,6 +1224,8 @@ int main() {
             case 2:
                 UI_Info(&state, display);
                 break;
+            case 3:
+                UI_Quit(&state, display);
             case 40:
                 UI_Range(&state, display);
                 break;
