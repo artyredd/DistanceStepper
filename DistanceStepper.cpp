@@ -1061,13 +1061,13 @@ MENU(Calibrate)
 
     display->SetCursor(0,2);
 
-    display->PrintString(state->CurrentCalibrationStep == 0 ? "Set Lower Height" : "Set Upper Height");
+    display->PrintString(state->CurrentCalibrationStep == 1 ? "Set Lower Height" : "Set Upper Height");
 
     display->SetCursor(1,3);
     display->PrintString("Motor Position");
 
     display->SetCursor(3,0);
-    display->PrintString("Previously: " + state->Motor.PositionToString(state->CurrentCalibrationStep == 0 ? state->Motor.LowerLimit / 100 : state->Motor.UpperLimit / 100));
+    display->PrintString("Previously: " + state->Motor.PositionToString(state->CurrentCalibrationStep == 1 ? state->Motor.LowerLimit / 100 : state->Motor.UpperLimit / 100));
 
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
@@ -1115,11 +1115,11 @@ MENU(Calibrate)
 
         if(state->Encoder.ButtonUpThisFrame)
         {
-            if(state->CurrentCalibrationStep == 0)
+            if(state->CurrentCalibrationStep == 1)
             {
                 state->Motor.LowerLimit = state->Motor.Position;
             }
-            if(state->CurrentCalibrationStep == 1)
+            if(state->CurrentCalibrationStep == 0)
             {
                 state->Motor.UpperLimit = state->Motor.Position;
             }
