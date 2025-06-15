@@ -31,6 +31,7 @@
 
 #define assert_soft(condition,format,...) if(!(condition)){INFO(format,__VA_ARGS__); }
 #define wait_while(condition) while(condition){sleep_us(1);}
+#define sign(num) ((num) < 0 ? -1 : 1);
 
 
 typedef LCD_I2C* Display;
@@ -322,7 +323,7 @@ public:
 
     void SetPositionAsync(int position)
     {
-        assert_soft(!Synchronous, "attempted to set the async position of the motor while it's in a synchronous state.","");
+        assert_soft(!Synchronous, "ERROR: attempted to set the async position of the motor while it's in a synchronous state\n","");
 
         DesiredPosition = position;
         Direction = DesiredPosition > Position;
@@ -882,8 +883,13 @@ MENU(Range)
 
     bool enabled = false;
 
+    const int sensorNoiseMargin = 10;
+    const int desiredDistance = state->DesiredDistance;
+
     // allow movement
+    motor.Synchronous = false;
     motor.Enable();
+    motor.LimitMotion = false;
 
     do{
         sensor.Update();
@@ -930,6 +936,7 @@ MENU(Range)
         {
             distance = sensor.Distance;
 
+            // update display
             if(previousDistance != distance)
             {
                 previousDistance = distance;
@@ -948,6 +955,18 @@ MENU(Range)
                         previousSensorString[i] = current;
                     }
                 }
+            }
+
+            int difference = desiredDistance-distance;
+
+            int absDiff = abs(difference);
+
+            if(absDiff > sensorNoiseMargin)
+            {
+                // move motor
+                int steps = (difference >> 1) * 100;
+
+                motor.SetPositionAsync(motor.Position + steps);
             }
         }
 
@@ -1107,6 +1126,8 @@ int main() {
     init_led_pins();
 
     state.Sensor.Init();
+
+    // initialize and test motor for movement
     state.Motor.Init();
 
     state.Motor.Enable();
