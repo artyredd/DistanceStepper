@@ -768,8 +768,9 @@ MENU(SetHeight)
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
 
-    // turn off the limits of the motor so it can extend past its motion limits
+    state->Motor.Synchronous = false;
     state->Motor.Enable();
+    state->Motor.LimitMotion = true;
 
     bool fastMode = false;
 
@@ -777,12 +778,16 @@ MENU(SetHeight)
     char previousSensorString[4];
     bool hadSensorLastCheck = state->Sensor.Connected();
 
+    Timer displayCooldown = Timer(0.01f);
+
     do{
         // print sensor status
         int distance = state->Sensor.Update();
 
-        if(previousDistance != distance)
+        if(previousDistance != distance && displayCooldown.UpdateAndCheck())
         {
+            displayCooldown.Reset();
+            
             previousDistance = distance;
 
             char str[4];
@@ -814,15 +819,8 @@ MENU(SetHeight)
         if(state->Encoder.ChangedThisFrame)
         {
             int newPosition = state->Encoder.Position * 100;
-            bool direction = newPosition >= state->Motor.Position;
-            int steps = newPosition - state->Motor.Position;
-
-            state->Motor.SetDirection(direction);
-
-            for(int i = 0; i < abs(steps);i++)
-            {
-                state->Motor.Step(MOTOR_DELAY_US);
-            }
+            
+            state->Motor.SetPositionAsync(newPosition);
         }
 
         if(state->Encoder.ButtonHeldThisFrame)
@@ -890,7 +888,7 @@ MENU(Range)
     // allow movement
     motor.Synchronous = false;
     motor.Enable();
-    motor.LimitMotion = false;
+    motor.LimitMotion = true;
 
     do{
         sensor.Update();
@@ -1205,9 +1203,6 @@ int main() {
     state.Motor.TurnSimple(6400, false, MOTOR_DELAY_US);
 
     state.Encoder.Init();
-
-    // test quit
-    state.Motor.UpperLimit = 64000;
 
     while (true) {
 
