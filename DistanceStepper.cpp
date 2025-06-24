@@ -15,12 +15,14 @@
 #define VERBOSE 1
 #define ENCODER_LOGGING 0
 #define SENSOR_LOGGING 0
-#define MOTOR_LOGGING 0
+#define MOTOR_LOGGING 1
 #define UI_LOGGING 1
 
 #define abs(value) ((value) < 0 ? (-value) : (value))
 #define max(value,upper) ((value) < (upper) ? upper : value)
 #define min(value,lower) ((value) > (lower) ? lower : value)
+
+#if VERBOSE
 #define INFO(format,...) if(VERBOSE){printf(format,__VA_ARGS__);} 
 #define INFO_IF(condition,format,...) if(VERBOSE && (condition)){printf(format,__VA_ARGS__);} 
 #define ENCODER_INFO(format,...) if(ENCODER_LOGGING){INFO(format,__VA_ARGS__)}
@@ -28,6 +30,16 @@
 #define SENSOR_INFO(format,...) if(SENSOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define MOTOR_INFO(format,...) if(MOTOR_LOGGING){INFO(format,__VA_ARGS__)}
 #define UI_INFO(format,...) if(UI_LOGGING){INFO(format,__VA_ARGS__)}
+#else
+// don't bog down stdio for faster motor control
+#define INFO(format,...) 
+#define INFO_IF(condition,format,...)
+#define ENCODER_INFO(format,...) 
+#define ENCODER_INFO_IF(condition,format,...) 
+#define SENSOR_INFO(format,...) 
+#define MOTOR_INFO(format,...) 
+#define UI_INFO(format,...)
+#endif
 
 #define assert_soft(condition,format,...) if(!(condition)){INFO(format,__VA_ARGS__); }
 #define wait_while(condition) while(condition){tight_loop_contents();}
@@ -47,7 +59,7 @@ typedef LCD_I2C* Display;
 #define DIR_PIN  11
 #define ENABLE_PIN 13
 #define MOTOR_OUT_PIN 11
-#define MOTOR_DELAY_US 15
+#define MOTOR_DELAY_US 30
 #define MOTOR_STEPS_PER_FRAME 1
 
 // encoder
@@ -213,8 +225,8 @@ public:
     volatile bool Direction;
     volatile bool LimitMotion = false;
 
-    volatile int LowerLimit = 0;
-    volatile int UpperLimit = 0;
+    volatile int LeftLimit = 0;
+    volatile int RightLimit = 0;
 
     volatile int MotorSpeed_us = MOTOR_DELAY_US;
 
@@ -271,27 +283,31 @@ public:
     {
         if(Direction != PreviousDirection)
         {
+            MOTOR_INFO("Sending Direction to GPIO: %s\n",Direction ? "right" : "left");
             gpio_put(DIR_PIN, Direction);
             PreviousDirection = Direction;
         }
 
         if(Direction)
         {
-            if(LimitMotion && (Position + 1) > UpperLimit)
+             if(LimitMotion && (Position + 1) > RightLimit)
             {
+                MOTOR_INFO("Attempted to exceed motor right limit current position: %li, limit: %li\n",Position, RightLimit);
                 return;
             }
 
             Position++;
-        }else{
-            if(LimitMotion && (Position - 1) < LowerLimit)
+        }
+        else
+        {
+           if(LimitMotion && (Position - 1) < LeftLimit)
             {
+                MOTOR_INFO("Attempted to exceed motor left limit current position: %li, limit: %li\n",Position, LeftLimit);
                 return;
             }
 
             Position--;
         }
-        
         
         gpio_put(STEP_PIN, 1);
         sleep_us(delay_us);
@@ -327,6 +343,8 @@ public:
 
         DesiredPosition = position;
         Direction = DesiredPosition > Position;
+
+        MOTOR_INFO("Set Position Async: %li, direction: %s\n",position,Direction ? "right" : "left");
     }
 
     // BLOCKING;
@@ -691,9 +709,9 @@ MENU(Info)
 
     // motor can't move in info screen
     display->SetCursor(0,0);
-    display->PrintString("Motor: " + state->Motor.PositionToString(state->Motor.Position) + " " + state->Motor.PositionToString(state->Motor.LowerLimit));
+    display->PrintString("Motor: " + state->Motor.PositionToString(state->Motor.Position) + " " + state->Motor.PositionToString(state->Motor.LeftLimit));
     display->SetCursor(1,20-6);
-    display->PrintString(state->Motor.PositionToString(state->Motor.UpperLimit));
+    display->PrintString(state->Motor.PositionToString(state->Motor.RightLimit));
 
     display->SetCursor(2,0);
     bool hasSensorAtStart = state->Sensor.Connected();
@@ -870,6 +888,9 @@ MENU(Range)
     DistanceSensor& sensor = state->Sensor;
     StepMotor& motor = state->Motor;
 
+    // reset encoder
+    state->Encoder.Position = motor.Position / 100;
+
     bool displayingErrorScreen = false;
 
     int previousDistance = 0;
@@ -890,6 +911,8 @@ MENU(Range)
     motor.Enable();
     motor.LimitMotion = true;
 
+    const int stepWidth = 1 * 100;
+    Timer displayCooldown = Timer(1/10);
     do{
         sensor.Update();
 
@@ -936,8 +959,9 @@ MENU(Range)
             distance = sensor.Distance;
 
             // update display
-            if(previousDistance != distance)
+            if(previousDistance != distance && displayCooldown.UpdateAndCheck())
             {
+                displayCooldown.Reset();
                 previousDistance = distance;
 
                 char str[4];
@@ -963,7 +987,7 @@ MENU(Range)
             if(absDiff > sensorNoiseMargin)
             {
                 // move motor
-                int steps = (difference >> 1) * 100;
+                int steps = (difference >> 1) * stepWidth;
 
                 motor.SetPositionAsync(motor.Position + steps);
             }
@@ -1010,22 +1034,23 @@ MENU(Quit)
     
     const int startPosition = state->Motor.Position;
 
-    const int endPosition = state->Motor.UpperLimit;
+    const int endPosition = state->Motor.RightLimit;
     
-    UI_INFO("Sending motor to upper limit: %li\n",endPosition);
+    UI_INFO("Sending motor to right limit: %li, current position: %li\n", endPosition, startPosition);
     
-    state->Motor.Synchronous = false;
-    state->Motor.Enable();
-    state->Motor.SetPositionAsync(endPosition);
+    StepMotor& motor = state->Motor;
+
+    motor.Synchronous = false;
+    motor.Enable();
+    motor.SetPositionAsync(endPosition);
 
     const int segments = 20;
     const int total = abs(endPosition - startPosition);
 
-
     int previousChar = 0;
-    while(state->Motor.Position != state->Motor.UpperLimit)
+    while(motor.Position != motor.RightLimit)
     {
-        float value = state->Motor.Position - startPosition;
+        float value = motor.Position - startPosition;
 
         float percentage = value / total;
 
@@ -1038,7 +1063,7 @@ MENU(Quit)
         }
     }
 
-    state->Motor.Disable();
+    motor.Disable();
 
     display->Clear();
     display->PrintCentered("You can now",1);
@@ -1065,7 +1090,7 @@ MENU(Calibrate)
     display->PrintString("Motor Position");
 
     display->SetCursor(3,0);
-    display->PrintString("Previously: " + state->Motor.PositionToString(state->CurrentCalibrationStep == 1 ? state->Motor.LowerLimit / 100 : state->Motor.UpperLimit / 100));
+    display->PrintString("Previously: " + state->Motor.PositionToString(state->CurrentCalibrationStep == 1 ? state->Motor.LeftLimit / 100 : state->Motor.RightLimit / 100));
 
     // reset position to be the motors position
     state->Encoder.Position = state->Motor.Position / 100;
@@ -1074,10 +1099,12 @@ MENU(Calibrate)
     const int fastStepScale = 10;
     state->Encoder.StepScale = baseStepScale;
 
+    StepMotor& motor = state->Motor;
+
     // turn off the limits of the motor so it can extend past its motion limits
-    state->Motor.LimitMotion = false;
-    state->Motor.Synchronous = false;
-    state->Motor.Enable();
+    motor.LimitMotion = false;
+    motor.Synchronous = false;
+    motor.Enable();
 
     int previousNumberLength = 0;
     
@@ -1088,7 +1115,7 @@ MENU(Calibrate)
         {
             int newPosition = state->Encoder.Position * 100;
             
-            state->Motor.SetPositionAsync(newPosition);
+            motor.SetPositionAsync(newPosition);
             
             int numberLength = snprintf(NULL, 0, "%d", state->Encoder.Position);
             int column = 10 - (numberLength/2);
@@ -1113,20 +1140,25 @@ MENU(Calibrate)
 
         if(state->Encoder.ButtonUpThisFrame)
         {
+            // lower/right most
             if(state->CurrentCalibrationStep == 1)
             {
-                state->Motor.LowerLimit = state->Motor.Position;
+                motor.LeftLimit = motor.Position;
+                UI_INFO("Setting motor left limit to position: %li\n",motor.LeftLimit);
             }
+            
+            // upper/ left most
             if(state->CurrentCalibrationStep == 0)
             {
-                state->Motor.UpperLimit = state->Motor.Position;
+                motor.RightLimit = motor.Position;
+                UI_INFO("Setting motor right limit to position: %li\n",motor.RightLimit);
             }
             
             state->Encoder.StepScale = 1;
-            state->Motor.Disable();
+            motor.Disable();
             
             // resume forcing the motor to stop when exceeding the limits
-            state->Motor.LimitMotion = true;
+            motor.LimitMotion = true;
             
             // go back to main menu
             if(state->CurrentCalibrationStep == 1)
@@ -1194,14 +1226,6 @@ int main() {
     state.Motor.SetPositionAsync(0);
     wait_while(state.Motor.Position != 0);
     state.Motor.Disable();
-
-    sleep_ms(1000);
-
-    state.Motor.Synchronous = true;
-    state.Motor.TurnSimple(6400, true, MOTOR_DELAY_US);
-    sleep_ms(100);
-    state.Motor.TurnSimple(6400, false, MOTOR_DELAY_US);
-
     state.Encoder.Init();
 
     while (true) {
